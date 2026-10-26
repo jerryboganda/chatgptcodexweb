@@ -17,4 +17,5 @@ jobs:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun test tests/chatgpt-web-models.test.ts tests/browser-worker-contract.test.ts tests/chatgpt-web-usage.test.ts
+      - if: ${{ !cancelled() }}
+        run: bun test tests/chatgpt-web-models.test.ts tests/browser-worker-contract.test.ts tests/chatgpt-web-usage.test.ts
