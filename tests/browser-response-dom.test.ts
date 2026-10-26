@@ -603,6 +603,29 @@ test("unmatched final blocks report structural evidence without exposing answer 
   }
 });
 
+test("empty visual wrappers do not break alignment after the streamed prefix disappears", async () => {
+  const html = `<section id="turn"><div class="markdown"><p id="first">First.</p><p id="second">Second.</p><p id="tail">Tail.</p></div></section>`;
+  const [before, after] = await snapshots(html, [doc => {
+    doc.getElementById("first")!.remove();
+    doc.getElementById("second")!.remove();
+    const wrapper = doc.createElement("div");
+    wrapper.appendChild(doc.createElement("div"));
+    doc.querySelector(".markdown")!.insertBefore(wrapper, doc.getElementById("tail"));
+  }]);
+  const buffer = new ChatGptMarkdownBuffer(undefined, 0);
+  expect(buffer.observe(before!.markdownSegments, 0)).toBe("First.\n\nSecond.");
+  expect(buffer.observe(after!.markdownSegments, 1)).toBe("");
+  expect(buffer.currentSnapshotIsConsistent()).toBeTrue();
+  expect(buffer.finish()).toEqual({ markdown: "First.\n\nSecond.\n\nTail.", delta: "\n\nTail." });
+});
+
+test("empty visual wrappers retain a nested horizontal rule", async () => {
+  const frame = await snapshot(`<section id="turn"><div class="markdown"><p>First.</p><div><hr></div><p>Tail.</p></div></section>`);
+  const buffer = new ChatGptMarkdownBuffer(undefined, 0);
+  expect(buffer.observe(frame.markdownSegments, 0)).toBe("First.\n\n* * *");
+  expect(buffer.finish().markdown).toBe("First.\n\n* * *\n\nTail.");
+});
+
 test("a remounted block with unchanged text remains aligned when ChatGPT changes its tag", () => {
   const buffer = new ChatGptMarkdownBuffer(undefined, 0);
   buffer.observe([{ key: "original", tag: "p", html: "<p>Same answer.</p>", text: "Same answer.", streamable: true }]);
