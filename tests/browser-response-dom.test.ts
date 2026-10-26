@@ -626,12 +626,11 @@ test("empty visual wrappers retain a nested horizontal rule", async () => {
   expect(buffer.finish().markdown).toBe("First.\n\n* * *\n\nTail.");
 });
 
-test("a remounted block with unchanged text remains aligned when ChatGPT changes its tag", () => {
+test("empty visual wrappers cannot make the final paragraph stream prematurely", async () => {
+  const frame = await snapshot(`<section id="turn"><div class="markdown"><p>Final paragraph.</p><div><div></div></div></div></section>`);
   const buffer = new ChatGptMarkdownBuffer(undefined, 0);
-  buffer.observe([{ key: "original", tag: "p", html: "<p>Same answer.</p>", text: "Same answer.", streamable: true }]);
-  buffer.observe([{ key: "remounted", tag: "div", html: "<div>Same answer.</div>", text: "Same answer.", streamable: false }]);
-  expect(buffer.currentSnapshotIsConsistent()).toBeTrue();
-  expect(buffer.finish()).toEqual({ markdown: "Same answer.", delta: "" });
+  expect(buffer.observe(frame.markdownSegments, 0)).toBe("");
+  expect(buffer.finish()).toEqual({ markdown: "Final paragraph.", delta: "Final paragraph." });
 });
 
 test("recreated horizontal rules preserve their Markdown and position among delivered paragraphs", async () => {

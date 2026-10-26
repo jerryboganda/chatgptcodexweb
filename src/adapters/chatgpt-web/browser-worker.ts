@@ -4305,12 +4305,16 @@ export class ChatGptBrowserWorker {
           ? [...child.children].filter(candidate => candidate.tagName === "LI") as HTMLElement[]
           : [];
         if (listItems.length === 0) {
+          const text = markdownText(child);
+          const links = linkState(child);
+          // Removed visual widgets can leave empty DIV shells that have no Markdown content.
+          if (tag === "div" && !text && !links.mutableReference && !child.querySelector(":not(div)")) return;
           flattenedMarkdownSegments.push({
             nodeKey: nodeKey(child),
             tag,
             html: child.outerHTML,
-            text: markdownText(child),
-            ...linkState(child),
+            text,
+            ...links,
             ...childRange,
           });
           return;
