@@ -3547,6 +3547,18 @@ test("Bigger Context stages use the lowest account mode that can carry the stage
     300_000,
   )).toThrow("No ChatGPT effort");
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 100_000, 500_000).effort).toBe("low");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 100_000, 500_000, "5.6").effort).toBe("low");
+  // 6 Instant disables Send above 211,256 characters on Pro too. A 274,680-character stage
+  // reproduced "send button remained disabled" when staged there; it must use Medium instead.
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 78_062, 274_680, "6").effort).toBe("medium");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 20_000, 211_256, "6").effort).toBe("low");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 20_000, 211_257, "6").effort).toBe("medium");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 100_000, 600_000, "6").effort).toBe("max");
+  expect(() => assertChatGptWebInputWithinLimits(1, 1, "gpt-5.6-sol", "low", pro, 211_256, "6")).not.toThrow();
+  expect(() => assertChatGptWebInputWithinLimits(1, 1, "gpt-5.6-sol", "low", pro, 211_257, "6")).toThrow(
+    "211,256-character ChatGPT composer boundary",
+  );
+  expect(() => assertChatGptWebInputWithinLimits(1, 1, "gpt-5.6-sol", "low", pro, 500_000)).not.toThrow();
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 100_000, 600_000).effort).toBe("max");
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 104_000, 1_200_000).effort).toBe("max");
   expect(resolveChatGptWebMultipartStagingMode(
@@ -3571,6 +3583,28 @@ test("Bigger Context stages use the lowest account mode that can carry the stage
       finalMessageChars: 4_000,
     },
   )).not.toThrow();
+  const proStages = (stagingFamily: "5.6" | "6", stagingEffort: "low" | "medium") => () =>
+    assertChatGptWebMultipartInputWithinLimits(
+      100_000,
+      78_062,
+      "gpt-5.6-sol",
+      "xhigh",
+      pro,
+      274_680,
+      2,
+      {
+        stagingEffort,
+        stagingFamily,
+        maxStageMessageTokens: 78_062,
+        maxStageChars: 274_680,
+        finalMessageTokens: 1_000,
+        finalMessageChars: 4_000,
+      },
+      "6",
+    );
+  expect(proStages("6", "low")).toThrow("211,256-character ChatGPT composer boundary");
+  expect(proStages("6", "medium")).not.toThrow();
+  expect(proStages("5.6", "low")).not.toThrow();
 });
 
 test("browser diagnostics redact context envelopes and capability values", () => {

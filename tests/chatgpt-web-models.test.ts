@@ -195,6 +195,19 @@ describe("fixed ChatGPT Web model routes", () => {
       browserMessageTokenLimit: 103_000,
       browserComposerCharLimit: 545_000,
     });
+    expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "low", pro, "5.6")).toEqual({
+      browserMessageTokenLimit: 103_000,
+      browserComposerCharLimit: 545_000,
+    });
+    // 6 Instant disables Send above 211,256 characters on Pro as well (measured 2026-10-27).
+    expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "low", pro, "6")).toEqual({
+      browserMessageTokenLimit: 103_000,
+      browserComposerCharLimit: 211_256,
+    });
+    for (const effort of ["medium", "max"] as const) {
+      expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, effort, pro, "6"))
+        .toEqual(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, effort, pro));
+    }
     for (const effort of ["medium", "high", "xhigh"] as const) {
       expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, effort, pro)).toEqual({
         browserMessageTokenLimit: 103_000,

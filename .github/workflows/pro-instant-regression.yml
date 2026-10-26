@@ -1,0 +1,20 @@
+name: Pro Instant limit regression
+
+on:
+  push:
+    branches: [codex/pro-instant-limit]
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test tests/chatgpt-web-models.test.ts tests/browser-worker-contract.test.ts tests/chatgpt-web-usage.test.ts
