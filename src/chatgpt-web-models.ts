@@ -71,6 +71,10 @@ export const CHATGPT_WEB_ZERO_RISK_PRO_CONTEXT_WINDOW =
 export const CHATGPT_WEB_ZERO_RISK_PRO_AUTO_COMPACT_TOKEN_LIMIT =
   CHATGPT_WEB_PRO_AUTO_COMPACT_TOKEN_LIMIT * 3;
 export const CHATGPT_WEB_PRO_INSTANT_COMPOSER_CHAR_LIMIT = 545_000;
+// Rechecked 2026-10-27 on a Pro account (effort slider exposed Pro) in "6 Instant": the composer
+// kept Send aria-disabled above 211,257 characters for words, digits and single-letter filler
+// alike, so the limit counts characters, not tokens. The 545,000 figure above belongs to 5.6 Instant.
+export const CHATGPT_WEB_GPT6_PRO_INSTANT_COMPOSER_CHAR_LIMIT = CHATGPT_WEB_INSTANT_COMPOSER_CHAR_LIMIT;
 // Rechecked 2026-09-19: Pro-account Medium/High accept 500k characters but the server
 // rejects larger messages with HTTP 413 (message_length_exceeds_limit), even below
 // the token budget. Composer insertion itself still accepts them. Keep headroom;
@@ -221,6 +225,7 @@ export function resolveChatGptWebTransportLimits(
   backendModel: ChatGptWebBackendModel,
   effort: ChatGptWebAdapterEffort,
   capabilities: ChatGptWebAccountCapabilities,
+  modelFamily?: ChatGptWebModelFamily,
 ): ChatGptWebTransportLimits {
   if (isChatGptWebZeroRiskBackendModel(backendModel)) return {};
   if (backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) {
@@ -238,7 +243,9 @@ export function resolveChatGptWebTransportLimits(
   if (effort === "low") {
     return {
       browserMessageTokenLimit: CHATGPT_WEB_PRO_STANDARD_MESSAGE_TOKEN_LIMIT,
-      browserComposerCharLimit: CHATGPT_WEB_PRO_INSTANT_COMPOSER_CHAR_LIMIT,
+      browserComposerCharLimit: modelFamily === "6"
+        ? CHATGPT_WEB_GPT6_PRO_INSTANT_COMPOSER_CHAR_LIMIT
+        : CHATGPT_WEB_PRO_INSTANT_COMPOSER_CHAR_LIMIT,
     };
   }
   if (effort === "max") {

@@ -693,6 +693,7 @@ export function assertChatGptWebInputWithinLimits(
   effort: ChatGptWebModelMode["effort"],
   capabilities: ChatGptWebCapabilities,
   promptChars?: number,
+  modelFamily?: ChatGptWebModelFamily,
 ): void {
   if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_LUNA_MODEL_ID) {
     throw new Error(`ChatGPT web context limit is not defined for model: ${modelId}`);
@@ -711,6 +712,7 @@ export function assertChatGptWebInputWithinLimits(
     modelId,
     effort,
     capabilities,
+    modelFamily,
   );
   if (
     browserComposerCharLimit !== undefined
@@ -745,6 +747,8 @@ export function assertChatGptWebMultipartInputWithinLimits(
   partCount: number,
   transport?: {
     stagingEffort: ChatGptWebModelMode["effort"];
+    /** Family that carries the inert stages; defaults to the final model's family. */
+    stagingFamily?: ChatGptWebModelFamily;
     maxStageMessageTokens: number;
     maxStageChars: number;
     finalMessageTokens: number;
@@ -769,12 +773,14 @@ export function assertChatGptWebMultipartInputWithinLimits(
     messageTokens: number,
     messageChars: number,
     messageEffort: ChatGptWebModelMode["effort"],
+    messageFamily: ChatGptWebModelFamily | undefined,
     imageTokens = 0,
   ): void => {
     const { browserMessageTokenLimit, browserComposerCharLimit } = resolveChatGptWebTransportLimits(
       modelId,
       messageEffort,
       capabilities,
+      messageFamily,
     );
     if (browserComposerCharLimit !== undefined && messageChars > browserComposerCharLimit) {
       throw new ChatGptWebAdapterError(
@@ -804,16 +810,18 @@ export function assertChatGptWebMultipartInputWithinLimits(
       transport.maxStageMessageTokens,
       transport.maxStageChars,
       transport.stagingEffort,
+      transport.stagingFamily ?? modelFamily,
     );
     assertMessageBoundary(
       "final part",
       transport.finalMessageTokens,
       transport.finalMessageChars,
       effort,
+      modelFamily,
       transport.finalImageTokens,
     );
   } else {
-    assertMessageBoundary("stage", estimatedMessageTokens, maxMessageChars, effort);
+    assertMessageBoundary("stage", estimatedMessageTokens, maxMessageChars, effort, modelFamily);
   }
   // More transport messages do not enlarge the model's advertised context window.
   const { contextWindow } = resolveChatGptWebContextLimits(
@@ -834,6 +842,7 @@ export function resolveChatGptWebMultipartStagingMode(
   capabilities: ChatGptWebCapabilities,
   maxStageMessageTokens: number,
   maxStageChars: number,
+  stagingFamily?: ChatGptWebModelFamily,
 ): ChatGptWebModelMode {
   if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_LUNA_MODEL_ID) {
     throw new Error(`ChatGPT Bigger Context staging mode is not defined for model: ${modelId}`);
@@ -843,7 +852,7 @@ export function resolveChatGptWebMultipartStagingMode(
     : ["low", "medium"];
   for (const effort of efforts) {
     const mode = resolveChatGptWebModelMode(modelId, effort, capabilities);
-    const limits = resolveChatGptWebTransportLimits(modelId, effort, capabilities);
+    const limits = resolveChatGptWebTransportLimits(modelId, effort, capabilities, stagingFamily);
     const messageTokenLimit = resolveChatGptWebStagingTokenBudget(modelId, effort, capabilities);
     const tokenFits = maxStageMessageTokens <= messageTokenLimit;
     const charsFit = limits.browserComposerCharLimit === undefined
@@ -4859,20 +4868,22 @@ export class ChatGptBrowserWorker {
       const maxStageChars = multipartStages
         ? Math.max(...multipartStages.map(stage => stage.text.length))
         : undefined;
+      // Pro's inert context uploads have always used 5.6 Sol. Pin that existing
+      // transport explicitly now that Latest/GPT-6 uses 6 Sol at lower efforts.
+      // The final answer still selects and verifies the requested Pro family.
+      // Max stages ignore the family, so the pin is also the family whose composer limits apply
+      // when choosing the staging effort; every other request stages through its own family.
+      const pinsProStaging = multipartStages && turn.modelFamily === "6" && requestedMode.effort === "max";
       const stagingMode = multipartStages
         ? resolveChatGptWebMultipartStagingMode(
           turn.modelId,
           browserCapabilities,
           maxStageMessageTokens!,
           maxStageChars!,
+          pinsProStaging ? "5.6" : turn.modelFamily,
         )
         : requestedMode;
-      // Pro's inert context uploads have always used 5.6 Sol. Pin that existing
-      // transport explicitly now that Latest/GPT-6 uses 6 Sol at lower efforts.
-      // The final answer still selects and verifies the requested Pro family.
-      const stagingFamily = multipartStages && turn.modelFamily === "6"
-        && requestedMode.effort === "max" && stagingMode.effort !== "max"
-        ? "5.6" : turn.modelFamily;
+      const stagingFamily = pinsProStaging && stagingMode.effort !== "max" ? "5.6" : turn.modelFamily;
       if (prepared.multipart) {
         assertChatGptWebMultipartInputWithinLimits(
           estimatedInputTokens,
@@ -4887,6 +4898,7 @@ export class ChatGptBrowserWorker {
             && maxStageMessageTokens !== undefined
             && maxStageChars !== undefined ? {
             stagingEffort: stagingMode.effort,
+            stagingFamily,
             maxStageMessageTokens,
             maxStageChars,
             finalMessageTokens,
@@ -4903,6 +4915,7 @@ export class ChatGptBrowserWorker {
           requestedMode.effort,
           browserCapabilities,
           maxMessageChars,
+          turn.modelFamily,
         );
       }
       const deadline = this.config.turnTimeoutMs === undefined

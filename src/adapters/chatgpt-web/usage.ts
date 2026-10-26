@@ -104,7 +104,9 @@ export function resolveBiggerContextMultipartParts(
     for (const [index, text] of messages.entries()) {
       const final = index === messages.length - 1;
       const effort = final ? mode.effort : stagingEffort;
-      const { browserComposerCharLimit } = resolveChatGptWebTransportLimits(backendModel, effort, capabilities);
+      const { browserComposerCharLimit } = resolveChatGptWebTransportLimits(
+        backendModel, effort, capabilities, parsed._chatgptModelFamily,
+      );
       if (browserComposerCharLimit !== undefined && text.length > browserComposerCharLimit) return false;
       const budget = resolveChatGptWebMessageTokenBudget(
         backendModel, effort, capabilities, final ? estimateChatGptWebImageTokens(compiled) + skillFileTokens(compiled.skillFiles, parsed.modelId) : 0,
