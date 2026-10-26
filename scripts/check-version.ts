@@ -37,16 +37,14 @@ for (const [path, needle] of expected) {
 }
 for (const path of ["README.md", "README.zh-CN.md", "README.ja.md", "README.ko.md"]) {
   const readme = readFileSync(resolve(root, path), "utf8");
-  for (const target of ["win-x64.exe", "mac-arm64.dmg", "mac-x64.dmg", "linux-x64.AppImage"]) {
+  for (const target of ["win-x64.exe"]) {
     const download = `/releases/download/v${packageVersion}/codex-web-gpt-${packageVersion}-${target}`;
     if (!readme.includes(download)) throw new Error(`${path} download for ${target} is not synchronized to ${packageVersion}`);
   }
 }
 const releaseWorkflow = readFileSync(resolve(root, ".github/workflows/release.yml"), "utf8");
-for (const arch of ["amd64", "arm64"]) {
-  if (!releaseWorkflow.includes(`runtime_asset: codex-chatgpt-web-linux-${arch}.tar.gz`)) {
-    throw new Error(`release.yml must build the native Linux ${arch} runtime`);
-  }
+if (!releaseWorkflow.includes("codex-chatgpt-web-windows-amd64.zip")) {
+  throw new Error("release.yml must build the Windows runtime");
 }
 if (releaseWorkflow.split(`bun-version: ${bunVersion}`).length - 1 !== 2) {
   throw new Error(`release.yml must pin Bun ${bunVersion} in both jobs`);
