@@ -58,6 +58,14 @@ jobs:
           # identity=- and verifies that ad-hoc signature after extracting the ZIP.
           # electron-builder otherwise skips even ad-hoc signing for PR builds.
           CSC_FOR_PULL_REQUEST: ${{ runner.os == 'macOS' && 'true' || 'false' }}
+      - name: Upload same-version Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: same-version-windows-installer
+          path: launcher/artifacts/codex-web-gpt-*-win-x64.exe
+          if-no-files-found: error
+          retention-days: 3
       - name: Verify Linux AppImage ABI on current Arch
         if: runner.os == 'Linux'
         run: |

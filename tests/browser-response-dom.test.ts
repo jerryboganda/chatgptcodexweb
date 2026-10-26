@@ -603,6 +603,14 @@ test("unmatched final blocks report structural evidence without exposing answer 
   }
 });
 
+test("a remounted block with unchanged text remains aligned when ChatGPT changes its tag", () => {
+  const buffer = new ChatGptMarkdownBuffer(undefined, 0);
+  buffer.observe([{ key: "original", tag: "p", html: "<p>Same answer.</p>", text: "Same answer.", streamable: true }]);
+  buffer.observe([{ key: "remounted", tag: "div", html: "<div>Same answer.</div>", text: "Same answer.", streamable: false }]);
+  expect(buffer.currentSnapshotIsConsistent()).toBeTrue();
+  expect(buffer.finish()).toEqual({ markdown: "Same answer.", delta: "" });
+});
+
 test("recreated horizontal rules preserve their Markdown and position among delivered paragraphs", async () => {
   const html = `<section id="turn"><div class="markdown"><p>First.</p><hr><p>Middle.</p><hr><p>Last.</p><p>Pending.</p></div></section>`;
   const frames = await snapshots(html, [doc => {

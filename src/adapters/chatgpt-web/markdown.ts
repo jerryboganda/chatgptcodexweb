@@ -466,7 +466,7 @@ export class ChatGptMarkdownBuffer {
     if (!segment.text.trim() && segment.tag !== "hr") return undefined;
     const semanticMatches = this.committed
       .map((committed, index) => ({ committed, index }))
-      .filter(({ committed }) => committed.tag === segment.tag && committed.text === segment.text);
+      .filter(({ committed }) => committed.text === segment.text);
     // Match each committed occurrence at most once, in response order. A new
     // repeated paragraph must not be rebound to an occurrence already consumed
     // by this snapshot. Counting from zero breaks when earlier blocks disappear.
