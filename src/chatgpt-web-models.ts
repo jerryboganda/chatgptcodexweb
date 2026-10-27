@@ -74,7 +74,10 @@ export const CHATGPT_WEB_PRO_INSTANT_COMPOSER_CHAR_LIMIT = 545_000;
 // Rechecked 2026-10-27 on a Pro account (effort slider exposed Pro) in "6 Instant": the composer
 // kept Send aria-disabled above 211,257 characters for words, digits and single-letter filler
 // alike, so the limit counts characters, not tokens. The 545,000 figure above belongs to 5.6 Instant.
-export const CHATGPT_WEB_GPT6_PRO_INSTANT_COMPOSER_CHAR_LIMIT = CHATGPT_WEB_INSTANT_COMPOSER_CHAR_LIMIT;
+// Rechecked 2026-10-28: the server accepted 180,000 characters but rejected 195,000 with "The message
+// you submitted was too long" while Send was still enabled, so the usable bound is lower than the
+// composer's. Keep to the largest size proven to be accepted.
+export const CHATGPT_WEB_GPT6_PRO_INSTANT_COMPOSER_CHAR_LIMIT = 180_000;
 // Rechecked 2026-09-19: Pro-account Medium/High accept 500k characters but the server
 // rejects larger messages with HTTP 413 (message_length_exceeds_limit), even below
 // the token budget. Composer insertion itself still accepts them. Keep headroom;
@@ -102,8 +105,11 @@ export const CHATGPT_WEB_LUNA_BIGGER_AUTO_COMPACT_TOKEN_LIMIT =
 // Rechecked 2026-10-08 on Pro: GPT-6 Medium/High/Extra High retained all 12
 // markers at 253k input tokens but lost the oldest markers at 283k. Keep room
 // below the passing boundary and compact before reaching this context ceiling.
+// Rechecked 2026-10-28 on Pro: a retained chat compacted at about 231k estimated tokens never
+// called the checkpoint tool, and the fallback summarizer then exceeded the 240k ceiling, which
+// failed the Codex task. Compact at 200k so the checkpoint answer and its reasoning fit in the chat.
 export const CHATGPT_WEB_GPT6_SOL_BIGGER_CONTEXT_WINDOW = 240_000;
-export const CHATGPT_WEB_GPT6_SOL_BIGGER_AUTO_COMPACT_TOKEN_LIMIT = 220_000;
+export const CHATGPT_WEB_GPT6_SOL_BIGGER_AUTO_COMPACT_TOKEN_LIMIT = 200_000;
 // Rechecked 2026-10-10 on Plus: Medium and High recovered all 12 distributed
 // codes at 127k estimated input tokens. At 144k both lost the entire first part.
 // Keep headroom below the passing result, with compaction before the ceiling.

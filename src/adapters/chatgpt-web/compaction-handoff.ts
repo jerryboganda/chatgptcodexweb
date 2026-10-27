@@ -375,6 +375,51 @@ export async function requestRetainedCompactionHandoff(
   }
 }
 
+/** A retained source may finish a checkpoint request without calling the control tool, so ask once more. */
+export const MAX_RETAINED_COMPACTION_HANDOFF_ATTEMPTS = 2;
+
+/**
+ * Asks the retained ChatGPT conversation for its checkpoint, repeating the one-shot request in the
+ * same conversation when ChatGPT answers without submitting it. Retiring the retained chat after one
+ * miss forces a fresh summarizer to ingest the complete history, which can exceed ChatGPT's window
+ * and fail the whole Codex task. Timeouts, cancellation and every other error are never retried.
+ */
+export async function requestRetainedCompactionHandoffWithRetry(
+  worker: ChatGptBrowserWorker,
+  parsed: CodexParsedRequest,
+  source: ChatGptTurnSession,
+  broker: TurnBroker,
+  capabilities: ChatGptWebCapabilities,
+  traceId: string,
+  signal?: AbortSignal,
+  timeoutMs = MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
+  onRetry?: () => void,
+): Promise<string> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await requestRetainedCompactionHandoff(
+        worker,
+        parsed,
+        source,
+        broker,
+        capabilities,
+        attempt === 1 ? traceId : `${traceId}_retry${attempt - 1}`,
+        signal,
+        timeoutMs,
+      );
+    } catch (error) {
+      if (
+        attempt >= MAX_RETAINED_COMPACTION_HANDOFF_ATTEMPTS
+        || signal?.aborted
+        || !(error instanceof ChatGptWebAdapterError)
+        || error.code !== "compaction_handoff_missing"
+      ) throw error;
+      console.warn(`[chatgpt-web] compaction_handoff_retry ${JSON.stringify({ traceId, attempt })}`);
+      onRetry?.();
+    }
+  }
+}
+
 interface CachedCompactionRun {
   createdAt: number;
   ownerKey: string;

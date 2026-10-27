@@ -40,7 +40,7 @@ import {
   canonicalizeCompactionHandoff,
   existingStructuredCompactionRun,
   MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
-  requestRetainedCompactionHandoff,
+  requestRetainedCompactionHandoffWithRetry,
   runStructuredCompactionOnce,
   settleActiveCompactionSource,
   settleActiveZeroRiskCompactionSource,
@@ -1116,7 +1116,7 @@ export function createChatGptWebAdapter(
                       stopSourceProgress?.();
                       handoffPhase = "retained_checkpoint";
                       armHandoffDeadline();
-                      rawSummary = await requestRetainedCompactionHandoff(
+                      rawSummary = await requestRetainedCompactionHandoffWithRetry(
                         worker,
                         parsed,
                         source,
@@ -1125,6 +1125,7 @@ export function createChatGptWebAdapter(
                         handoffTraceId,
                         operationSignal,
                         handoffTimeoutMs,
+                        () => armHandoffDeadline(),
                       );
                     } else {
                       if (source.isActive()) {
@@ -1136,7 +1137,7 @@ export function createChatGptWebAdapter(
                       stopSourceProgress?.();
                       handoffPhase = "retained_checkpoint";
                       armHandoffDeadline();
-                      rawSummary = await requestRetainedCompactionHandoff(
+                      rawSummary = await requestRetainedCompactionHandoffWithRetry(
                         worker,
                         parsed,
                         source,
@@ -1145,6 +1146,7 @@ export function createChatGptWebAdapter(
                         handoffTraceId,
                         operationSignal,
                         handoffTimeoutMs,
+                        () => armHandoffDeadline(),
                       );
                     }
                     const summary = canonicalizeCompactionHandoff(parsed, rawSummary);

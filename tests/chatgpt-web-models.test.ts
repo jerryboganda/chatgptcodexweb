@@ -199,10 +199,11 @@ describe("fixed ChatGPT Web model routes", () => {
       browserMessageTokenLimit: 103_000,
       browserComposerCharLimit: 545_000,
     });
-    // 6 Instant disables Send above 211,256 characters on Pro as well (measured 2026-10-27).
+    // 6 Instant disables Send above 211,256 characters on Pro and the server rejects messages above
+    // roughly 190,000 first (measured 2026-10-27/28); 180,000 is the largest size proven accepted.
     expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "low", pro, "6")).toEqual({
       browserMessageTokenLimit: 103_000,
-      browserComposerCharLimit: 211_256,
+      browserComposerCharLimit: 180_000,
     });
     for (const effort of ["medium", "max"] as const) {
       expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, effort, pro, "6"))

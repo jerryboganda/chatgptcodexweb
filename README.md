@@ -98,7 +98,7 @@ The launcher's **MCP** page guides the complete setup. For the exact clicks, see
 > Codex compaction supported throughout.
 >
 > GPT-6 Sol supports Bigger Context at Medium, High and available Extra High: **120,000 tokens
-> on Plus**, with compaction at **110,000**, and **240,000 on Pro**, with compaction at **220,000**.
+> on Plus**, with compaction at **110,000**, and **240,000 on Pro**, with compaction at **200,000**.
 > GPT-6 Instant uses standard context.
 > GPT-5.6 and GPT-6 Pro keep their existing Bigger Context limits.
 

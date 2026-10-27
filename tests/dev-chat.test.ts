@@ -253,7 +253,7 @@ test("Bigger Context exposes bounded full-history windows for Sol and Luna", asy
   });
   expect(biggerStatus.percent).toBe(Math.round((biggerStatus.inputTokens / 285_000) * 1_000) / 10);
   for (const [model, contextWindow, autoCompactTokenLimit] of [
-    ["chatgpt-web/gpt-6-sol", 240_000, 220_000],
+    ["chatgpt-web/gpt-6-sol", 240_000, 200_000],
     ["chatgpt-web/gpt-6-sol-instant", 111_193, 95_000],
   ] as const) {
     const state = bigger.open(model.split("/")[1]!, model).state;

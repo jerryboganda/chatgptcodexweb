@@ -15,6 +15,7 @@ import {
   cancelStructuredCompactionTrace,
   existingStructuredCompactionRun,
   requestRetainedCompactionHandoff,
+  requestRetainedCompactionHandoffWithRetry,
   runStructuredCompactionOnce,
   settleActiveCompactionSource,
   settleActiveZeroRiskCompactionSource,
@@ -493,6 +494,79 @@ test("a settled browser response without a checkpoint reports the missing handof
     await broker.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+async function withRetainedHandoffFixture(
+  scenario: (broker: TurnBroker, source: ChatGptTurnSession, abort: AbortController) => Promise<void>,
+): Promise<void> {
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-handoff-retry-"));
+  const broker = TurnBroker.forSocket(defaultBrokerEndpoint(root));
+  const sourceRequest = request(false);
+  const source = new ChatGptTurnSession({
+    mode: "read-only", browser: Promise.resolve("source complete"),
+    physicalSettlement: Promise.resolve(), trace: new ChatGptTraceFeed(), text: new ChatGptTextFeed(),
+    usageInput: sourceRequest, conversationKey: chatGptConversationKey(sourceRequest, "provider")!, cancel() {},
+  });
+  const abort = new AbortController();
+  const guard = setTimeout(() => abort.abort(new Error("test observation guard")), 5_000);
+  try {
+    await scenario(broker, source, abort);
+  } finally {
+    clearTimeout(guard);
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+const retryCapabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+
+test("a retained checkpoint that ChatGPT answered without submitting is requested once more in the same chat", async () => {
+  await withRetainedHandoffFixture(async (broker, source, abort) => {
+    const traces: string[] = [];
+    let retried = 0;
+    const summary = await requestRetainedCompactionHandoffWithRetry(
+      { appName: "Codex app", run: async (turn: BrowserTurn) => {
+        traces.push(turn.traceId);
+        const prepared = await turn.prepare();
+        if (traces.length === 1) {
+          prepared.release();
+          return "I could not call the tool.";
+        }
+        const token = prepared.text.match(/turn_token (turn_\w+)/)![1]!;
+        const handoffId = prepared.text.match(/handoff_id (handoff_\w+)/)![1]!;
+        await callTurnBroker(broker.socketPath, { method: "submit_compaction_handoff", token, handoffId, summary: "Second attempt summary" });
+        prepared.release();
+        return "Checkpoint submitted.";
+      } } as never,
+      request(true), source, broker, retryCapabilities, "trace_retry_once", abort.signal,
+      undefined, () => { retried++; },
+    );
+    expect(summary).toBe("Second attempt summary");
+    expect(traces).toEqual(["trace_retry_once", "trace_retry_once_retry1"]);
+    expect(retried).toBe(1);
+  });
+});
+
+test("a retained checkpoint that is missing twice fails after exactly two requests", async () => {
+  await withRetainedHandoffFixture(async (broker, source, abort) => {
+    let runs = 0;
+    await expect(requestRetainedCompactionHandoffWithRetry(
+      { appName: "Codex app", run: async () => { runs++; return "No tool call."; } } as never,
+      request(true), source, broker, retryCapabilities, "trace_retry_twice", abort.signal,
+    )).rejects.toMatchObject({ code: "compaction_handoff_missing", retryable: false });
+    expect(runs).toBe(2);
+  });
+});
+
+test("other retained checkpoint failures are not retried", async () => {
+  await withRetainedHandoffFixture(async (broker, source, abort) => {
+    let runs = 0;
+    await expect(requestRetainedCompactionHandoffWithRetry(
+      { appName: "Codex app", run: async () => { runs++; throw new Error("ChatGPT tab closed"); } } as never,
+      request(true), source, broker, retryCapabilities, "trace_no_retry", abort.signal,
+    )).rejects.toThrow("ChatGPT tab closed");
+    expect(runs).toBe(1);
+  });
 });
 
 test("a checkpoint submitted before browser completion wins the terminal response race", async () => {
