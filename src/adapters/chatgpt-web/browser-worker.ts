@@ -154,6 +154,10 @@ export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
 const CHATGPT_CONNECTOR_MENTION_QUERY = "@codex";
 const CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS = 10_000;
+// Expanding or collapsing a very large user bubble re-renders it on the page's main thread. With
+// several large conversations open, the key's acknowledgement can take far longer than a connector
+// click, and failing the already accepted turn over it would cost the whole task.
+const CHATGPT_USER_MESSAGE_EXPAND_TIMEOUT_MS = 60_000;
 const CHATGPT_SMOKE_TEXT = "Reply with exactly: CODEX WEB GPT READY";
 const CHATGPT_SMOKE_EXPECTED = "CODEX WEB GPT READY";
 /**
@@ -3051,6 +3055,25 @@ export class ChatGptBrowserWorker {
     };
   }
 
+  /** Press a bubble's expansion control and wait for it to report the requested state. */
+  private async toggleUserMessageExpansion(
+    expand: Locator,
+    expanded: "true" | "false",
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await expand.evaluate(node => (node as HTMLElement).focus({ preventScroll: true }));
+    try {
+      await expand.press("Enter", { signal, timeout: CHATGPT_USER_MESSAGE_EXPAND_TIMEOUT_MS });
+    } catch (error) {
+      // A busy page can miss the key acknowledgement although the key was delivered; the state
+      // check below is what proves the bubble changed, so only that failure is fatal.
+      if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
+    }
+    await expand.locator(`xpath=self::*[@aria-expanded="${expanded}"]`).waitFor({
+      state: "attached", signal, timeout: CHATGPT_USER_MESSAGE_EXPAND_TIMEOUT_MS,
+    });
+  }
+
   private async withExpandedUserMessage<T>(
     group: Locator,
     read: (content: Locator) => Promise<T>,
@@ -3081,22 +3104,14 @@ export class ChatGptBrowserWorker {
       return { scroll, focus: document.activeElement };
     });
     try {
-      await expand.evaluate(node => (node as HTMLElement).focus({ preventScroll: true }));
-      await expand.press("Enter", { signal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
-      await expand.locator('xpath=self::*[@aria-expanded="true"]').waitFor({
-        state: "attached", signal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-      });
+      await this.toggleUserMessageExpansion(expand, "true", signal);
       return await read(content);
     } finally {
       // Cleanup owns a separate bounded window even when the read was cancelled.
       try {
         if (await expand.count() !== 1) throw new Error("ChatGPT removed the message expansion control during verification");
         if (await expand.getAttribute("aria-expanded") === "true") {
-          await expand.evaluate(node => (node as HTMLElement).focus({ preventScroll: true }));
-          await expand.press("Enter", { timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
-          await expand.locator('xpath=self::*[@aria-expanded="false"]').waitFor({
-            state: "attached", timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-          });
+          await this.toggleUserMessageExpansion(expand, "false");
         }
       } finally {
         try {
