@@ -56,7 +56,7 @@ Be concise, structured, and focused on helping the next LLM seamlessly continue 
  */
 export const COMPACT_CONTINUITY_GUIDANCE = [
   "Keep long-range continuity, not just the latest task:",
-  "- Start the summary with a block that opens with the line <standing_instructions> and closes with the line </standing_instructions>. Inside it, one per line, copy word for word every rule, preference, constraint, identifier, code, name, path and decision that any user message gave at any point in the conversation, including ones unrelated to the latest task and ones already listed in an earlier checkpoint summary. Do not paraphrase them or drop them because they look irrelevant now.",
+  "- Start the summary with a block: a line containing only STANDING_INSTRUCTIONS_BEGIN, then one fact per line, then a line containing only STANDING_INSTRUCTIONS_END. Copy word for word every rule, preference, constraint, identifier, code, name, path and decision that any user message gave at any point in the conversation, including ones unrelated to the latest task and ones already listed in an earlier checkpoint summary. Do not paraphrase them or drop them because they look irrelevant now.",
   "- Carry forward everything an earlier checkpoint summary recorded, merged with what happened since. Never replace it with a summary of only the most recent turns.",
   "- Then describe the work in order: what was asked, what was done, what is still open.",
 ].join("\n");

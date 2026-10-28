@@ -95,7 +95,10 @@ function userPromptText(content: unknown): string | undefined {
   return text || undefined;
 }
 
-const STANDING_BLOCK = /<standing_instructions>([\s\S]*?)<\/standing_instructions>/i;
+// Plain-text markers on their own lines: ChatGPT renders angle-bracket tags as HTML and drops them
+// from the copied answer, so a tag cannot carry a block through a fresh summarizer chat.
+const STANDING_BLOCK = /^[^\w\n]*STANDING_INSTRUCTIONS_BEGIN[^\w\n]*\r?\n([\s\S]*?)^[^\w\n]*STANDING_INSTRUCTIONS_END[^\w\n]*$/m;
+const standingBlock = (body: string): string => `STANDING_INSTRUCTIONS_BEGIN\n${body}\nSTANDING_INSTRUCTIONS_END`;
 const STANDING_BLOCK_MAX_CHARS = 20_000;
 
 function standingLineCovered(line: string, currentText: string): boolean {
@@ -122,11 +125,11 @@ export function carryForwardStandingInstructions(summary: string, priorSummary: 
     .filter(line => !standingLineCovered(line, currentText));
   if (missing.length === 0) return summary;
   const addition = missing.join("\n");
-  if (!current) return `<standing_instructions>\n${addition}\n</standing_instructions>\n\n${summary}`;
+  if (!current) return `${standingBlock(addition)}\n\n${summary}`;
   if (current[1]!.length + addition.length > STANDING_BLOCK_MAX_CHARS) return summary;
   return summary.replace(
     STANDING_BLOCK,
-    (_match, body: string) => `<standing_instructions>${body.trimEnd()}\n${addition}\n</standing_instructions>`,
+    (_match, body: string) => standingBlock(`${body.trimEnd()}\n${addition}`),
   );
 }
 
