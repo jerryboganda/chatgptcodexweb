@@ -196,6 +196,10 @@ bun run app:package
 
 </details>
 
+## Long-horizon tasks
+
+For jobs that run for hours, `scripts/longrun/longrun.mjs` supervises Codex: it keeps a progress file, resumes or restarts the chat after failures, hands the work to a fresh chat with a briefing when needed, and finishes only when your acceptance command passes. The coding uses your ChatGPT web quota; a small controller model (default `gpt-6-luna`, high effort, configurable) only advises. See [docs/long-horizon.md](docs/long-horizon.md).
+
 ## Star History
 
 <a href="https://www.star-history.com/?repos=miuuyy%2Fcodex-chatgpt-web&type=date&legend=top-left">
