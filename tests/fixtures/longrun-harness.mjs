@@ -35,7 +35,9 @@ export async function scenario(script, run, controllerScript) {
   const controllerCalls = () => { try { return read("controller-"); } catch { return []; } };
   const config = (over = {}) => ({
     repo, taskText: "Build the thing", quiet: true, bridgePort: 0, keepAwake: false, effort: "high",
-    codex: { exe: process.execPath, args: [fake] }, pollMs: 50, controller: Boolean(controllerScript), controllerTimeoutMs: 20_000, ...over,
+    codex: { exe: process.execPath, args: [fake] }, pollMs: 50, controller: Boolean(controllerScript), controllerTimeoutMs: 20_000,
+    // Never let a stored or environment API key send test evidence to the real Jev API; Jev tests pass a fake client.
+    controllerMode: "luna", ...over,
   });
   const deps = (over = {}) => ({ sleep: async (ms) => { waits.push(ms); }, jitter: 0.5, ...over });
   try {

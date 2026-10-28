@@ -70,8 +70,52 @@ badly, the built-in policy decides alone.
 --controller-effort high           # high | xhigh | ...; or env LONGRUN_CONTROLLER_EFFORT
 --controller-every 1               # consult after every n-th successful round
 --no-controller                    # built-in policy only
+--controller-mode auto             # auto | jev | shadow | luna, see "Jev as the fast first line"; or env LONGRUN_CONTROLLER_MODE
 --model chatgpt-web/gpt-6-sol --effort xhigh   # the coding chat (web quota)
 ```
+
+## Jev as the fast first line
+
+[Jev](https://typesafe.ai) (TypeSafe AI) is a decision model, not a chat model: it is sent the same evidence summary
+and typed questions and returns a choice or score with probabilities and a confidence, usually in well under a
+second. When a Jev key is set up, the controller asks Jev first and only asks the Codex model (Luna) when Jev is
+unsure, so most routine decisions cost no Codex quota and no minutes of waiting. Without a key nothing changes.
+
+```bash
+node scripts/longrun/jev-key.mjs set      # hidden prompt; one live check; stored per user (Windows DPAPI)
+node scripts/longrun/jev-key.mjs status   # where the key comes from, never the key itself
+node scripts/longrun/jev-key.mjs test     # one sample decision with its latency
+node scripts/longrun/jev-key.mjs clear
+```
+
+Type the key only into that prompt, never into a chat. `TYPESAFE_API_KEY` in the environment overrides the stored key.
+
+| Mode (`--controller-mode`) | Behaviour |
+| --- | --- |
+| `auto` (default) | Jev answers; the Codex model is asked only for the cases below. No key: same as `luna`. |
+| `shadow` | Both are asked and the Codex model acts; Jev's answer is logged and the agreement counted in `REPORT.md`. Use it to judge Jev on your own jobs before trusting it. |
+| `jev` | Jev decides; when it is unsure the policy decides alone. The Codex model only writes briefings. |
+| `luna` | The Codex model only, as before. |
+
+What Jev decides, and when its answer stands:
+
+- **Between rounds** (continue or a fresh chat, plus a context-health score). It stands when its confidence is at least
+  `--jev-confidence` (default 0.6) and it agrees with the policy's own proposal, or when it moves a chat to a fresh one at
+  `--jev-high-confidence` (default 0.85). It never turns a fresh chat that the policy chose back into a continue, and a `stop`
+  or contradictory answer (a continue with a "polluted" context) always goes to the Codex model.
+- **While a round runs** (wait, fresh, restart). `wait` needs the normal confidence; ending a round needs the high one.
+- **An error the rules cannot place** (they call it transient): Jev may recognise a rate limit, a login or a full context.
+  Only at high confidence, and it can never produce a fatal stop.
+- Briefings and hints are text, so they stay with the Codex model.
+
+If Jev fails three times in a row, or the API rejects the key, Jev is switched off for the rest of the run and the Codex
+model carries on. Every Jev answer is saved as `.longrun/jev-NNNN-<kind>.json` (probabilities, no evidence, no key).
+
+What is sent to TypeSafe: the same short evidence summary Luna sees (task start, counters, last messages, acceptance
+output, the start of the progress file, recent commits, uncommitted file names), with credential-looking text masked
+(bearer tokens, `sk-`/`ghp_`/AWS/Slack keys, JWTs, private-key blocks, `password=`/`token=` values). Nothing is sent when
+there is no key or in `luna` mode. Jev's confidence is not claimed to be calibrated by the vendor, so the thresholds are
+yours to tune; run a job in `shadow` first.
 
 ## Unattended use
 
