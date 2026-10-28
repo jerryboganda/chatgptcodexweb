@@ -76,8 +76,13 @@ test("rate-limit and login waits stay in the policy's hands", async () => {
   }, [advice({ action: "fresh" })]);
 });
 
-test("unusable controller answers fall back to the built-in policy", async () => {
-  for (const script of [[{ say: "I think we should rest." }], [{ type: "fail" }], [{ type: "hang" }]]) {
+// One test per answer: together they ran close to bun's 5 s default timeout on a slow runner.
+for (const [name, script] of [
+  ["chatter instead of JSON", [{ say: "I think we should rest." }]],
+  ["a crashed controller", [{ type: "fail" }]],
+  ["a hung controller", [{ type: "hang" }]],
+]) {
+  test(`unusable controller answers fall back to the built-in policy: ${name}`, async () => {
     await scenario([{ progress: "IN_PROGRESS", write: { "a.txt": "1" } }, { progress: "DONE" }], async ({ calls, config, deps }) => {
       const state = await runLongRun(config({ controllerTimeoutMs: 700 }), deps());
       assert.equal(state.status, "done");
@@ -85,8 +90,8 @@ test("unusable controller answers fall back to the built-in policy", async () =>
       assert.equal(calls()[1].resume, true);
       assert.ok(state.controllerFailures >= 1, JSON.stringify(script));
     }, script);
-  }
-});
+  });
+}
 
 test("a stop recommendation only counts after repeated failures", async () => {
   await scenario([{ type: "fail", message: "stream disconnected" }, { progress: "DONE" }], async ({ calls, config, deps }) => {
