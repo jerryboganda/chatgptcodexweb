@@ -173,7 +173,7 @@ test("retained compaction provides one exact same-agent control binding", () => 
   expect(prompt).toContain("do not use it with codex_exec, codex_tool_inventory, or any outer Codex tool");
   expect(prompt).toContain("submitted=true");
   // Facts given early in the chat must survive every later checkpoint, not just the latest task.
-  expect(prompt).toContain('titled "Standing instructions and facts"');
+  expect(prompt).toContain("<standing_instructions>");
   expect(prompt).toContain("Carry forward everything an earlier checkpoint summary recorded");
 });
 

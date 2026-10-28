@@ -6,6 +6,7 @@ import type {
 } from "../../types";
 import { extractChatGptCompactionSourceRevision } from "./environment";
 import type { ChatGptBrowserWorker } from "./browser-worker";
+import { isReadableCompactionSummaryText } from "../../responses/compaction";
 import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adapter-error";
 import type { CompactionTransactionHandle } from "./compaction-transaction";
 import type { ChatGptWebCapabilities } from "./model";
@@ -94,12 +95,60 @@ function userPromptText(content: unknown): string | undefined {
   return text || undefined;
 }
 
+const STANDING_BLOCK = /<standing_instructions>([\s\S]*?)<\/standing_instructions>/i;
+const STANDING_BLOCK_MAX_CHARS = 20_000;
+
+function standingLineCovered(line: string, currentText: string): boolean {
+  const flat = (value: string) => value.replace(/^[-*•\d.)\s]+/, "").replace(/\s+/g, " ").toLowerCase();
+  if (currentText.includes(flat(line))) return true;
+  // A rephrased line is still covered when every identifier or code in it is present.
+  const identifiers = (line.match(/[A-Za-z0-9][A-Za-z0-9._/\:-]{2,}/g) ?? [])
+    .map(token => token.replace(/[.,;:)]+$/, ""))
+    .filter(token => /[0-9_/\:-]/.test(token));
+  return identifiers.length > 0 && identifiers.every(token => currentText.includes(token.toLowerCase()));
+}
+
+/**
+ * A checkpoint writer sometimes drops a rule or code that an earlier checkpoint listed, and each
+ * later checkpoint can only carry what the previous one kept. The standing-instructions block of the
+ * previous checkpoint is therefore merged into the new one: lines are only ever added, never removed.
+ */
+export function carryForwardStandingInstructions(summary: string, priorSummary: string | undefined): string {
+  const prior = priorSummary?.match(STANDING_BLOCK)?.[1];
+  if (!prior) return summary;
+  const current = summary.match(STANDING_BLOCK);
+  const currentText = (current?.[1] ?? "").replace(/\s+/g, " ").toLowerCase();
+  const missing = prior.split("\n").map(line => line.trim()).filter(Boolean)
+    .filter(line => !standingLineCovered(line, currentText));
+  if (missing.length === 0) return summary;
+  const addition = missing.join("\n");
+  if (!current) return `<standing_instructions>\n${addition}\n</standing_instructions>\n\n${summary}`;
+  if (current[1]!.length + addition.length > STANDING_BLOCK_MAX_CHARS) return summary;
+  return summary.replace(
+    STANDING_BLOCK,
+    (_match, body: string) => `<standing_instructions>${body.trimEnd()}\n${addition}\n</standing_instructions>`,
+  );
+}
+
+function latestPriorCheckpointText(parsed: CodexParsedRequest): string | undefined {
+  for (let index = parsed.context.messages.length - 1; index >= 0; index -= 1) {
+    const message = parsed.context.messages[index]!;
+    if (message.role !== "user") continue;
+    const text = typeof message.content === "string"
+      ? message.content
+      : message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
+    if (isReadableCompactionSummaryText(text)) return text;
+  }
+  return undefined;
+}
+
 export function canonicalizeCompactionHandoff(
   parsed: CodexParsedRequest,
   summary: string,
 ): string {
-  const normalized = summary.trim();
-  if (!normalized) throw new Error("ChatGPT returned an empty structured compaction handoff");
+  const trimmed = summary.trim();
+  if (!trimmed) throw new Error("ChatGPT returned an empty structured compaction handoff");
+  const normalized = carryForwardStandingInstructions(trimmed, latestPriorCheckpointText(parsed));
   const latestUserPrompt = userPromptText(extractChatGptCompactionSourceRevision(parsed).content);
   if (latestUserPrompt === undefined) {
     throw new Error("ChatGPT compaction source has no canonical latest user prompt");
