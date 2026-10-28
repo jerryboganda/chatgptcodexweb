@@ -74,6 +74,74 @@ test("the controller cannot talk the supervisor back into a poisoned chat", asyn
   ]);
 });
 
+const advice = (action, reason) => ({ say: JSON.stringify({ action, reason }) });
+const verdict = (action) => ({ say: JSON.stringify({ action, contextHealth: "ok", reason: "x" }) });
+
+test("the controller judges a running round and replaces a looping chat long before the hard limit", async () => {
+  await scenario([{ type: "spin" }, { progress: "DONE" }], async ({ calls, controllerCalls, config, deps }) => {
+    const started = Date.now();
+    const state = await runLongRun(config({ stallMs: 60_000, progressMs: 120_000, watchMs: 500 }), deps());
+    assert.equal(state.status, "done");
+    assert.equal(state.failuresByKind.stuck, 1);
+    assert.equal(calls()[1].resume, false);
+    assert.ok(calls()[1].prompt.includes("BRIEFING-X"), "the new chat gets the controller's briefing");
+    const [watch] = controllerCalls();
+    assert.ok(watch.prompt.startsWith("[longrun-controller:watch]"));
+    assert.ok(watch.prompt.includes("Get-Content src/a.js") && /times\)/.test(watch.prompt), "it sees the repeated command");
+    assert.ok(Date.now() - started < 30_000);
+  }, [advice("fresh", "the same command repeats"), verdict("continue"), { say: "BRIEFING-X" }]);
+});
+
+test("when the controller says wait, the hard limit still ends a round that goes nowhere", async () => {
+  await scenario([{ type: "spin" }, { progress: "DONE" }], async ({ calls, controllerCalls, config, deps }) => {
+    const state = await runLongRun(config({ stallMs: 60_000, progressMs: 2500, watchMs: 400 }), deps());
+    assert.equal(state.status, "done");
+    assert.equal(state.failuresByKind.stuck, 1);
+    assert.equal(calls()[1].resume, false);
+    assert.ok(controllerCalls().some((c) => c.prompt.startsWith("[longrun-controller:watch]")));
+  }, [advice("wait", "it is busy"), verdict("continue"), { say: "BRIEF" }]);
+});
+
+test("the controller can restart a silent, hung process without giving up the chat", async () => {
+  await scenario([{ type: "hang" }, { progress: "DONE" }], async ({ repo, calls, config, deps }) => {
+    const state = await runLongRun(config({ stallMs: 8000, progressMs: 120_000, watchMs: 500 }), deps());
+    assert.equal(state.status, "done");
+    assert.equal(state.failuresByKind.transient, 1);
+    assert.equal(state.failuresByKind.stuck, undefined);
+    assert.equal(calls()[1].resume, true);
+    assert.equal(calls()[1].threadArg, "thread-1");
+    assert.match(readFileSync(path.join(repo, ".longrun", "events.jsonl"), "utf8"), /the controller judged the process hung: no output at all/);
+  }, [...Array.from({ length: 8 }, () => advice("restart", "no output at all")), verdict("continue")]);
+});
+
+test("a restart verdict is ignored while the process is still producing output", async () => {
+  await scenario([{ type: "spin" }, { progress: "DONE" }], async ({ repo, config, deps }) => {
+    const state = await runLongRun(config({ stallMs: 60_000, progressMs: 2500, watchMs: 400 }), deps());
+    assert.equal(state.status, "done");
+    assert.equal(state.failuresByKind.stuck, 1);
+    assert.equal(state.failuresByKind.transient, undefined);
+    assert.doesNotMatch(readFileSync(path.join(repo, ".longrun", "events.jsonl"), "utf8"), /judged the process hung/);
+  }, [advice("restart", "looks hung"), verdict("continue"), { say: "BRIEF" }]);
+});
+
+test("if the controller does not answer, the hard limit still protects the run", async () => {
+  await scenario([{ type: "spin" }, { progress: "DONE" }], async ({ calls, config, deps }) => {
+    const state = await runLongRun(config({ stallMs: 60_000, progressMs: 2500, watchMs: 400 }), deps());
+    assert.equal(state.status, "done");
+    assert.equal(state.failuresByKind.stuck, 1);
+    assert.ok(state.controllerFailures >= 1);
+  }, [{ type: "fail" }]);
+});
+
+test("a healthy round is never interrupted by the controller", async () => {
+  await scenario([{ type: "work", steps: 12, progress: "DONE" }], async ({ calls, controllerCalls, config, deps }) => {
+    const state = await runLongRun(config({ stallMs: 60_000, progressMs: 60_000, watchMs: 600 }), deps());
+    assert.equal(state.status, "done");
+    assert.equal(calls().length, 1);
+    assert.ok(!controllerCalls().some((c) => c.prompt.startsWith("[longrun-controller:watch]")));
+  }, [advice("fresh", "should never be asked"), verdict("continue")]);
+});
+
 test("the chat is recorded as soon as it starts, so a crash resumes it instead of abandoning it", async () => {
   await scenario([{ type: "hang" }, { progress: "DONE" }], async ({ repo, calls, config, deps }) => {
     const stateFile = path.join(repo, ".longrun", "state.json");

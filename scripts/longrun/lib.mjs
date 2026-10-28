@@ -23,6 +23,7 @@ export const DEFAULTS = Object.freeze({
   noProgressRoundsBeforeStop: 6,
   maxContextFreshInARow: 4,
   roundProgressMinutes: 40,
+  watchMinutes: 10,
   compactionErrorsBeforeFresh: 3,
   maxStuckInARow: 3,
   maxCompactScale: 4,
@@ -313,7 +314,7 @@ export function initialState({ id, taskHash, now, branch }) {
 // ---------------------------------------------------------------------------------------------
 
 export const CONTROLLER_DEFAULTS = Object.freeze({ model: "gpt-6-luna", effort: "high", timeoutMinutes: 6 });
-export const CONTROLLER_MARK = Object.freeze({ decide: "[longrun-controller:decide]", brief: "[longrun-controller:brief]" });
+export const CONTROLLER_MARK = Object.freeze({ decide: "[longrun-controller:decide]", brief: "[longrun-controller:brief]", watch: "[longrun-controller:watch]" });
 
 /** First balanced JSON object inside free text (models sometimes wrap it in prose or a code fence). */
 export function extractJson(text) {
@@ -364,6 +365,31 @@ export function buildDecidePrompt(e) {
     "nextHint is optional guidance for the agent's next round (at most 400 characters): name the concrete problem and the next step, for example the failing check and the file to open.",
     "The supervisor already proposes an action; you may agree or override it.",
     "Reply with ONE JSON object only, no prose: {\"action\":\"continue|fresh|stop\",\"waitSeconds\":0,\"contextHealth\":\"ok|degraded|polluted\",\"reason\":\"one sentence\",\"nextHint\":\"\"}",
+    "",
+    "=== EVIDENCE ===",
+    e,
+  ].join("\n");
+}
+
+const WATCH_ACTIONS = new Set(["wait", "fresh", "restart"]);
+
+/** Accepts only a well-formed mid-round verdict; anything else means "keep waiting". */
+export function normalizeWatchAdvice(raw) {
+  if (!raw || typeof raw !== "object" || !WATCH_ACTIONS.has(raw.action)) return undefined;
+  return { action: raw.action, reason: String(raw.reason ?? "").replace(/\s+/g, " ").trim().slice(0, 300) };
+}
+
+/** The controller's check on a round that is still running but has changed nothing for a while. */
+export function buildWatchPrompt(e) {
+  return [
+    CONTROLLER_MARK.watch,
+    "You supervise an unattended long-running coding agent. Its current round is still running, but nothing in the repository or its progress file has changed for a while. Do not run any tools or commands; read the evidence and judge what is going on.",
+    "Choose one:",
+    "- \"wait\": the agent is plausibly working (long reasoning, a long build or test run, a large file being written, normal variety in its commands). This is the right answer unless there are clear signs of trouble.",
+    "- \"fresh\": the chat is stuck in a loop or poisoned: the same commands or file dumps repeat, compaction or reconnect errors keep coming, it re-reads the project over and over without writing anything, or it is confused about the task. The round is killed and the work continues in a NEW chat that gets a briefing.",
+    "- \"restart\": the process is hung or disconnected: it has produced NO output at all for many minutes (see \"Time since the process last produced any output\"; reconnect notices do not count) but the chat itself is fine. The round is killed and the SAME chat is resumed. Never choose this while output is still arriving.",
+    "No change to the repository is NOT by itself a sign of trouble: the agent may be reading, reasoning for a long time or running tests. Waiting costs time; a needless fresh chat costs context. Prefer \"wait\" for ordinary slowness, and decide firmly when the evidence shows a loop or a silent process.",
+    "Reply with ONE JSON object only, no prose: {\"action\":\"wait|fresh|restart\",\"reason\":\"one sentence naming the evidence\"}",
     "",
     "=== EVIDENCE ===",
     e,

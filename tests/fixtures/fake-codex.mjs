@@ -22,7 +22,7 @@ if (prompt.startsWith("[longrun-controller")) {
   writeFileSync(path.join(dir, `controller-${n}.json`), JSON.stringify({ args, prompt, cwd: process.cwd() }));
   const script = process.env.FAKE_CONTROLLER_SCRIPT ? JSON.parse(readFileSync(process.env.FAKE_CONTROLLER_SCRIPT, "utf8")) : [{ say: "{}" }];
   const scenario = script[Math.min(n, script.length) - 1];
-  if (scenario.type === "hang") await new Promise(() => {});
+  if (scenario.type === "hang") { setInterval(() => {}, 1 << 30); await new Promise(() => {}); }
   if (scenario.type === "fail") { process.stderr.write("controller unavailable"); process.exit(1); }
   const out = args[args.indexOf("-o") + 1];
   if (out && scenario.say !== undefined) writeFileSync(out, scenario.say);
@@ -56,7 +56,8 @@ if (scenario.type === "crash_early") { process.stderr.write(scenario.message ?? 
 
 emit({ type: "thread.started", thread_id: threadId });
 emit({ type: "turn.started" });
-if (scenario.type === "hang") await new Promise(() => {});
+// A silent process: a timer keeps node alive (a bare never-settling await would make it exit at once).
+if (scenario.type === "hang") { setInterval(() => {}, 1 << 30); await new Promise(() => {}); }
 // A compaction death spiral: the same reconnect/compaction error again and again, nothing ever changes.
 if (scenario.type === "loop") for (;;) { emit({ type: "error", message: "Reconnecting... 1/2 (stream disconnected before completion: ChatGPT compaction had no observed activity for 300000ms)" }); await pause(100); }
 // Busy but going nowhere: commands keep running, no file is touched.

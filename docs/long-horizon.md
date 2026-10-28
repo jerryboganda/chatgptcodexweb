@@ -50,6 +50,13 @@ Details that keep the handoff safe:
 
 ## The controller
 
+While a round is running, the controller also checks on it. If the repository and progress file have not changed
+for `--watch-minutes` (default 10), it is shown the recent commands, the repeated ones, compaction errors and the
+time since the process last produced output, and answers `wait`, `fresh` (the chat is looping or poisoned: kill
+it and continue in a new chat with a briefing) or `restart` (the process is silent and hung: resume the same chat).
+A `restart` is honoured only for a process that really is silent. If the controller does not answer, the hard
+limit (`--progress-minutes`) still applies.
+
 After every round that is not final, the controller reads a short evidence summary and answers with JSON:
 continue in the same chat or start a fresh one, how healthy the context looks (`ok`, `degraded`,
 `polluted`), an optional pause and an optional hint for the next round. When a fresh chat is chosen it also

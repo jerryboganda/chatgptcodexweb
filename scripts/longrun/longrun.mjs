@@ -14,7 +14,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CONTROLLER_DEFAULTS, DEFAULTS, PROGRESS_TEMPLATE, buildBriefPrompt, buildContinuePrompt, buildDecidePrompt, buildHandoffPrompt,
-  buildInitialPrompt, capText, decideNext, extractJson, initialState, mergeControllerAdvice, normalizeAdvice, parseProgress,
+  buildInitialPrompt, buildWatchPrompt, capText, decideNext, extractJson, initialState, mergeControllerAdvice, normalizeAdvice,
+  normalizeWatchAdvice, parseProgress,
 } from "./lib.mjs";
 
 const sha = (value) => createHash("sha1").update(value).digest("hex");
@@ -115,7 +116,7 @@ function largestSnapshot(dirs) {
 }
 
 /** Runs one Codex round and reports how it ended. Never throws. */
-function runCodexRound({ config, prompt, kind, threadId, roundNo, dirs, onEvent, fingerprint }) {
+function runCodexRound({ config, prompt, kind, threadId, roundNo, dirs, onEvent, fingerprint, onWatch }) {
   const common = [
     "--json", "--skip-git-repo-check", "-m", config.model, "-c", `model_reasoning_effort="${config.effort}"`,
     ...(config.compactLimit ? ["-c", `model_auto_compact_token_limit=${config.compactLimit}`] : []),
@@ -156,6 +157,25 @@ function runCodexRound({ config, prompt, kind, threadId, roundNo, dirs, onEvent,
     let compactionStreak = 0;
     let compactionFp;
     const stuck = (why) => { if (!stuckWhy) stuckWhy = why; killTree(child); };
+    // What the controller is shown when it is asked, mid-round, whether this chat is still doing useful work.
+    let restartWhy = "";
+    let watching = false;
+    let nextWatchMs = config.watchMs;
+    let compactionErrors = 0;
+    const recent = [];
+    const commandCounts = new Map();
+    const note = (event) => {
+      let line;
+      if (event.type === "item.completed" && event.item?.type === "command_execution") {
+        const command = String(event.item.command ?? "").replace(/^"?[^"]*powershell(?:\.exe)?"?\s+-Command\s+/i, "").replace(/\s+/g, " ").trim().slice(0, 160);
+        commandCounts.set(command, (commandCounts.get(command) ?? 0) + 1);
+        line = `ran: ${command} (exit ${event.item.exit_code ?? "?"})`;
+      } else if (event.type === "item.completed" && event.item?.type === "agent_message") {
+        line = `said: ${String(event.item.text ?? "").replace(/\s+/g, " ").slice(0, 160)}`;
+      } else if (event.type === "item.completed") line = `item: ${event.item?.type ?? "?"}`;
+      else if (event.type === "error") line = `error: ${String(event.message ?? "").replace(/\s+/g, " ").slice(0, 200)}`;
+      if (line) { recent.push(line); if (recent.length > 25) recent.shift(); }
+    };
 
     const handleLine = (line) => {
       if (!line.trim()) return;
@@ -163,6 +183,8 @@ function runCodexRound({ config, prompt, kind, threadId, roundNo, dirs, onEvent,
       let event;
       try { event = JSON.parse(line); } catch { return; }
       onEvent?.(event);
+      note(event);
+      if (event.type === "error" && /compact/i.test(event.message ?? "")) compactionErrors += 1;
       const reconnecting = event.type === "error" && /^Reconnecting/i.test(event.message ?? "");
       if (!reconnecting) lastActivity = Date.now();
       if (event.type === "thread.started" && event.thread_id) result.threadId = event.thread_id;
@@ -192,13 +214,33 @@ function runCodexRound({ config, prompt, kind, threadId, roundNo, dirs, onEvent,
     const watchdog = setInterval(() => {
       const at = Date.now();
       if (at - lastActivity > config.stallMs) { stalled = true; killTree(child); return; }
-      if (fingerprint && config.progressMs && at - lastFpAt >= fingerprintEveryMs) {
+      if (fingerprint && (config.progressMs || onWatch) && at - lastFpAt >= fingerprintEveryMs) {
         lastFpAt = at;
         const fp = fingerprint();
-        if (fp !== lastFp) { lastFp = fp; lastChange = at; }
-        else if (at - lastChange > config.progressMs) {
+        if (fp !== lastFp) { lastFp = fp; lastChange = at; nextWatchMs = config.watchMs; }
+        else if (config.progressMs && at - lastChange > config.progressMs) {
           stuck(`no change to the repository or progress file for ${Math.max(1, Math.round(config.progressMs / 60_000))} min while the round kept running`);
         }
+      }
+      // The controller looks at a round that has changed nothing for a while, long before the hard limit above.
+      if (onWatch && !watching && !stuckWhy && !restartWhy && config.watchMs && at - lastChange >= nextWatchMs) {
+        watching = true;
+        const [topCommand, topCount] = [...commandCounts.entries()].sort((a, b) => b[1] - a[1])[0] ?? [];
+        const silentMs = at - lastActivity;
+        Promise.resolve(onWatch({
+          elapsedMs: at - startedAt, idleMs: at - lastChange, silentMs, recent: [...recent], compactionErrors,
+          topCommand: topCount > 1 ? { command: topCommand, times: topCount } : undefined,
+        })).then((advice) => {
+          watching = false;
+          nextWatchMs = Date.now() - lastChange + config.watchMs;
+          if (settled || !advice) return;
+          if (advice.action === "fresh") stuck(`the controller judged this chat stuck: ${advice.reason || "no reason given"}`);
+          // A restart is only honoured for a process that really has gone quiet; one that is still producing output is not hung.
+          else if (advice.action === "restart" && Date.now() - lastActivity >= config.stallMs / 4) {
+            restartWhy = `the controller judged the process hung: ${advice.reason || "no reason given"}`;
+            killTree(child);
+          }
+        }).catch(() => { watching = false; });
       }
     }, config.pollMs);
 
@@ -211,6 +253,7 @@ function runCodexRound({ config, prompt, kind, threadId, roundNo, dirs, onEvent,
       result.exitCode = exitCode;
       if (spawnError) { result.outcome = "failed"; result.failureText = `spawn failed: ${spawnError.message}`; }
       else if (stuckWhy) { result.outcome = "stuck"; result.failureText = stuckWhy; }
+      else if (restartWhy) { result.outcome = "stalled"; result.failureText = restartWhy; }
       else if (stalled) { result.outcome = "stalled"; result.failureText = `no output for ${Math.round(config.stallMs / 1000)}s`; }
       else if (turnFailed || (exitCode !== 0 && !sawCompleted)) {
         result.outcome = "failed";
@@ -389,6 +432,7 @@ export async function runLongRun(userConfig, deps = {}) {
   config.policy = { ...DEFAULTS, ...(userConfig.policy ?? {}) };
   config.stallMs = userConfig.stallMs ?? config.policy.stallMinutes * 60_000;
   config.progressMs = userConfig.progressMs ?? config.policy.roundProgressMinutes * 60_000;
+  config.watchMs = userConfig.watchMs ?? config.policy.watchMinutes * 60_000;
   config.repo = path.resolve(config.repo);
   config.stateDir = path.resolve(config.stateDir ?? path.join(config.repo, ".longrun"));
   config.codex = config.codex ?? findCodex();
@@ -492,6 +536,26 @@ export async function runLongRun(userConfig, deps = {}) {
           config: roundConfig, prompt, kind, threadId: state.threadId, roundNo, dirs,
           onEvent: (event) => { if (event.type === "thread.started") adoptThread(event.thread_id); },
           fingerprint: () => fingerprintOf(config.repo, files, isGit),
+          // The controller (Luna by default) also judges a round while it is running, not only between rounds.
+          onWatch: config.controller && config.watchMs ? async (w) => {
+            const progressText = existsSync(progressAbs) ? readFileSync(progressAbs, "utf8") : "";
+            const evidence = [
+              `Original task (start): ${capText(config.taskText.trim().replace(/\s+/g, " "), 1500)}`,
+              `Round ${roundNo} (${kind}) has been running ${Math.round(w.elapsedMs / 60_000)} min. The repository and the progress file have not changed for ${Math.round(w.idleMs / 60_000)} min.`,
+              `Chats used so far: ${state.threads.length}; failures so far: ${JSON.stringify(state.failuresByKind)}; stuck rounds in a row: ${state.stuckInARow ?? 0}.`,
+              `Time since the process last produced any output (reconnect notices excluded): ${w.silentMs < 90_000 ? `${Math.round(w.silentMs / 1000)} s` : `${Math.round(w.silentMs / 60_000)} min`}.`,
+              `Compaction errors in this round: ${w.compactionErrors}.`,
+              w.topCommand ? `Most repeated command this round: ${w.topCommand.command} (${w.topCommand.times} times).` : "",
+              `Recent activity, oldest first:\n${w.recent.length ? w.recent.join("\n") : "(no commands or messages yet)"}`,
+              `Progress file (start):\n${progressText ? capText(progressText, 2500) : "(missing or empty)"}`,
+              isGit ? `Uncommitted changes:\n${capText(git(config.repo, ["status", "--short"]).out || "(clean)", 600)}` : "",
+            ].filter(Boolean).join("\n\n");
+            const answer = await askController(config, state, buildWatchPrompt(evidence), "watch", log);
+            const advice = normalizeWatchAdvice(extractJson(answer));
+            if (answer !== undefined && !advice) log("controller watch answered in an unexpected format; ignoring it");
+            if (advice) log(`controller watch: ${advice.action}${advice.reason ? ` (${advice.reason})` : ""}`);
+            return advice;
+          } : undefined,
         })
         : { outcome: "failed", failureText: "bridge unreachable (ECONNREFUSED)", durationMs: 0 };
       adoptThread(round.threadId);
@@ -561,7 +625,7 @@ function parseArgs(argv) {
     "--state-dir": "stateDir", "--bridge-port": ["bridgePort", Number], "--compact-limit": ["compactLimit", Number],
     "--launcher": "launcher", "--codex": "codexExe", "--checkpoint-prefix": "checkpointPrefix", "--notify-cmd": "notifyCmd",
     "--controller-model": "controllerModel", "--controller-effort": "controllerEffort", "--controller-every": ["controllerEvery", Number],
-    "--max-hours": ["policy.maxHours", Number], "--stall-minutes": ["policy.stallMinutes", Number], "--progress-minutes": ["policy.roundProgressMinutes", Number],
+    "--max-hours": ["policy.maxHours", Number], "--stall-minutes": ["policy.stallMinutes", Number], "--progress-minutes": ["policy.roundProgressMinutes", Number], "--watch-minutes": ["policy.watchMinutes", Number],
     "--max-failures": ["policy.maxConsecutiveFailures", Number], "--max-rounds": ["policy.maxRounds", Number],
   };
   const bools = { "--allow-dirty": "allowDirty", "--no-branch": ["branch", false], "--no-checkpoint": "noCheckpoint", "--restart": "restart", "--no-keep-awake": ["keepAwake", false], "--no-controller": ["controller", false], "--accept-verify-only": ["policy.acceptVerifyOnly", true] };
@@ -588,6 +652,7 @@ const USAGE = `Usage: node longrun.mjs --repo <dir> --task <file.md> --verify "<
   --no-controller              use only the built-in policy        --controller-every <n>  consult after every n-th ok round
   --sandbox <mode>             workspace-write | danger-full-access (default workspace-write)
   --max-hours <n>              wall-clock budget (default 24)       --stall-minutes <n>     kill a silent round (default 30)
+  --watch-minutes <n>          the controller judges a running round that changed nothing for n minutes (default 10, 0 = off)
   --progress-minutes <n>       a running round that changes nothing for n minutes is killed, next chat is fresh (default 40, 0 = off)
   --compact-limit <tokens>     force earlier auto-compaction (testing)
   --accept-verify-only         finish when the command passes even without STATUS: DONE
