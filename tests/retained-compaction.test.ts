@@ -562,6 +562,20 @@ test("a retained checkpoint that is missing twice fails after exactly two reques
   });
 });
 
+test("a checkpoint call blocked by ChatGPT's safety checks is not asked for again", async () => {
+  await withRetainedHandoffFixture(async (broker, source, abort) => {
+    let runs = 0;
+    await expect(requestRetainedCompactionHandoffWithRetry(
+      { appName: "Codex app", run: async () => {
+        runs++;
+        return "The tool call was blocked by OpenAI's safety checks. Please double check what you are sending.";
+      } } as never,
+      request(true), source, broker, retryCapabilities, "trace_blocked", abort.signal,
+    )).rejects.toMatchObject({ code: "compaction_handoff_blocked", retryable: false });
+    expect(runs).toBe(1);
+  });
+});
+
 test("other retained checkpoint failures are not retried", async () => {
   await withRetainedHandoffFixture(async (broker, source, abort) => {
     let runs = 0;

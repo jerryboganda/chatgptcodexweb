@@ -392,9 +392,19 @@ export async function requestRetainedCompactionHandoff(
       console.warn(`[chatgpt-web] compaction_handoff_missing ${JSON.stringify({
         traceId, answerChars: answer.length, answer: answer.slice(0, 300),
       })}`);
+      // ChatGPT's own safety layer can block the control call because of what the summary says
+      // (for example a credential-looking value). Asking again in the same chat is blocked the same way.
+      const blocked = /safety checks/i.test(answer);
       throw new ChatGptWebAdapterError(
-        "ChatGPT finished without sending the context summary to Codex. Check its response for a refusal or tool error.",
-        { status: 409, errorType: "invalid_request_error", code: "compaction_handoff_missing", retryable: false },
+        blocked
+          ? "ChatGPT's safety checks blocked the context summary from reaching Codex."
+          : "ChatGPT finished without sending the context summary to Codex. Check its response for a refusal or tool error.",
+        {
+          status: 409,
+          errorType: "invalid_request_error",
+          code: blocked ? "compaction_handoff_blocked" : "compaction_handoff_missing",
+          retryable: false,
+        },
       );
     });
     const summary = await withCompactionAbort(
@@ -430,7 +440,7 @@ export async function requestRetainedCompactionHandoff(
   }
 }
 
-/** A retained source may finish a checkpoint request without calling the control tool, so ask once more. */
+/** A retained source may finish a checkpoint request without calling the control tool, so ask once more. A safety block is final. */
 export const MAX_RETAINED_COMPACTION_HANDOFF_ATTEMPTS = 2;
 
 /**

@@ -1191,6 +1191,9 @@ export function createChatGptWebAdapter(
                       if (handoffError.code === "compaction_handoff_missing") {
                         return await runFreshCompaction("handoff_not_submitted");
                       }
+                      if (handoffError.code === "compaction_handoff_blocked") {
+                        return await runFreshCompaction("handoff_blocked_by_chatgpt_safety");
+                      }
                     }
                     throw handoffError;
                   } finally {
