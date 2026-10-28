@@ -329,14 +329,20 @@ export async function requestRetainedCompactionHandoff(
       prepareResume: prepare,
       conversationKey,
       requireRetainedConversation: true,
+      // A response that finishes without calling the control tool must leave the conversation
+      // available for one more request; an accepted handoff aborts the turn and never retains it.
+      retainConversation: true,
       compaction: true,
       abortSignal: browserAbort.signal,
       onTextDelta: () => {},
     });
     const handoff = broker.waitForCompactionHandoff(transaction.token, operationSignal);
-    const browserWithoutHandoff = browser.then<never>(() => {
+    const browserWithoutHandoff = browser.then<never>(answer => {
       // The control handler accepts the summary before replying to ChatGPT. A fully
       // settled response without that receipt cannot become a successful checkpoint.
+      console.warn(`[chatgpt-web] compaction_handoff_missing ${JSON.stringify({
+        traceId, answerChars: answer.length, answer: answer.slice(0, 300),
+      })}`);
       throw new ChatGptWebAdapterError(
         "ChatGPT finished without sending the context summary to Codex. Check its response for a refusal or tool error.",
         { status: 409, errorType: "invalid_request_error", code: "compaction_handoff_missing", retryable: false },

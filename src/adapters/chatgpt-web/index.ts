@@ -1181,9 +1181,16 @@ export function createChatGptWebAdapter(
                         "Structured compaction failed and its retained conversation could not be retired",
                       );
                     }
-                    if (handoffError instanceof ChatGptWebAdapterError
-                      && handoffError.code === "compaction_source_unavailable") {
-                      return await runFreshCompaction("source_disappeared_before_handoff");
+                    if (handoffError instanceof ChatGptWebAdapterError) {
+                      // The retained chat is gone or never submitted its checkpoint after the retry.
+                      // The complete canonical history still exists, so summarize it in a fresh chat
+                      // instead of failing the Codex task.
+                      if (handoffError.code === "compaction_source_unavailable") {
+                        return await runFreshCompaction("source_disappeared_before_handoff");
+                      }
+                      if (handoffError.code === "compaction_handoff_missing") {
+                        return await runFreshCompaction("handoff_not_submitted");
+                      }
                     }
                     throw handoffError;
                   } finally {
