@@ -183,6 +183,10 @@ bun run app:package
 
 </details>
 
+## 长时间任务
+
+对于需要运行数小时的任务，`scripts/longrun/longrun.mjs` 会监督 Codex：维护进度文件，失败后恢复同一聊天或带着简报交给新聊天，只有你的验收命令通过才算完成。编码使用 ChatGPT 网页额度；小型控制器模型（默认 `gpt-6-luna`，high，可更改）只提供建议。详见 [docs/long-horizon.md](docs/long-horizon.md)。
+
 ## Star History
 
 <a href="https://www.star-history.com/?repos=miuuyy%2Fcodex-chatgpt-web&type=date&legend=top-left">

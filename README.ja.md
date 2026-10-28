@@ -186,6 +186,10 @@ bun run app:package
 
 </details>
 
+## 長時間タスク
+
+数時間かかる作業では、`scripts/longrun/longrun.mjs` が Codex を監督します。進捗ファイルを保ち、失敗後は同じチャットを再開するか、ブリーフィング付きで新しいチャットに引き継ぎ、受け入れコマンドが成功したときだけ完了します。コーディングは ChatGPT の Web 枠を使い、小さなコントローラーモデル（既定は `gpt-6-luna`、high、変更可）は助言するだけです。詳細は [docs/long-horizon.md](docs/long-horizon.md) を参照してください。
+
 ## Star の履歴
 
 <a href="https://www.star-history.com/?repos=miuuyy%2Fcodex-chatgpt-web&type=date&legend=top-left">
