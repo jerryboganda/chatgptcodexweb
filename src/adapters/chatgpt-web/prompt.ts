@@ -652,6 +652,8 @@ export function compileChatGptWebPrompt(
     ? [
       "<codex_transport_resume>",
       `The task context is complete. Pass turn_token ${turnToken} unchanged to every tool call through the selected local Codex plugin in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`,
+      // An Extra High run once dropped a character while copying the token and reported a blocker.
+      "If a tool call is rejected because turn_token is malformed or has the wrong length, copy it again character by character from this message and retry the same call before reporting a blocker.",
       "</codex_transport_resume>",
     ]
     : [
