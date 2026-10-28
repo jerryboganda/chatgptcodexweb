@@ -5262,8 +5262,13 @@ export class ChatGptBrowserWorker {
         }
         finalPrompt = multipartFinalPrompt;
       }
+      // Lets a run be audited afterwards: which visible mode actually carried the final message.
+      console.info(`[chatgpt-web] final_send_mode ${JSON.stringify({
+        traceId: turn.traceId, requestedEffort: requestedMode.effort, effort: mode.effort,
+        modelFamily: mode.modelFamily, multipart: prepared.multipart !== undefined,
+      })}`);
 
-      let submissionBaseline = await this.captureSubmissionBaseline(page, finalPrompt, acknowledgedStages, prepared.turnToken);
+      let submissionBaseline =await this.captureSubmissionBaseline(page, finalPrompt, acknowledgedStages, prepared.turnToken);
       let catalogRefreshAvailable = mode.localTools && !reuseConversation && !prepared.multipart;
       const connectorAttemptBudget: ChatGptConnectorAttemptBudget = { triggerAttempts: 0 };
       for (;;) {
