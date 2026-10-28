@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import test from "node:test";
 import { runLongRun } from "../scripts/longrun/longrun.mjs";
@@ -72,6 +73,28 @@ test("the controller cannot talk the supervisor back into a poisoned chat", asyn
     { say: JSON.stringify({ action: "continue", contextHealth: "ok", reason: "looks fine" }) },
     { say: "BRIEFING: the previous chat looped" },
   ]);
+});
+
+test("a swallowed launcher start is retried while waiting for the bridge", async () => {
+  await scenario([{ progress: "DONE" }], async ({ repo, root, config }) => {
+    const probe = net.createServer();
+    await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+    const port = probe.address().port;
+    await new Promise((resolve) => probe.close(resolve));
+    const launcher = path.join(root, "launcher.cjs");
+    const marker = path.join(root, "launches.txt");
+    // The first start exits at once (like an instance that still holds the single-instance lock); the second one serves the port.
+    writeFileSync(launcher, `const fs=require("fs"),net=require("net");const [marker,port]=process.argv.slice(2);
+const n=(fs.existsSync(marker)?Number(fs.readFileSync(marker,"utf8")):0)+1;fs.writeFileSync(marker,String(n));
+if(n<2)process.exit(0);net.createServer((s)=>s.end()).listen(Number(port),"127.0.0.1");setTimeout(()=>process.exit(0),12000);`);
+    const state = await runLongRun(
+      config({ bridgePort: port, launcher: process.execPath, launcherArgs: [launcher, marker, String(port)], bridgeWaitMs: 15_000, bridgePollMs: 100, relaunchMs: 500, stallMs: 60_000 }),
+      { sleep: (ms) => wait(Math.min(ms, 100)), jitter: 0.5 },
+    );
+    assert.equal(state.status, "done");
+    assert.ok(Number(readFileSync(marker, "utf8")) >= 2, "the launcher was started again");
+    assert.match(readFileSync(path.join(repo, ".longrun", "events.jsonl"), "utf8"), /bridge is back/);
+  });
 });
 
 const advice = (action, reason) => ({ say: JSON.stringify({ action, reason }) });

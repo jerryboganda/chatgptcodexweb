@@ -380,14 +380,21 @@ async function ensureBridge(config, log, sleep) {
   if (!config.bridgePort) return true;
   if (await checkPort(config.bridgePort)) return true;
   log(`bridge on port ${config.bridgePort} is not reachable`);
-  if (config.launcher && existsSync(config.launcher)) {
+  const launch = () => {
+    if (!(config.launcher && existsSync(config.launcher))) return;
     log("starting the launcher");
-    spawn(config.launcher, [], { detached: true, stdio: "ignore", windowsHide: false }).unref();
-  }
+    try { spawn(config.launcher, config.launcherArgs ?? [], { detached: true, stdio: "ignore", windowsHide: false }).unref(); }
+    catch (error) { log(`could not start the launcher: ${error.message}`); }
+  };
+  launch();
   const deadline = Date.now() + config.bridgeWaitMs;
+  let lastLaunch = Date.now();
   while (Date.now() < deadline) {
-    await sleep(3000);
+    await sleep(config.bridgePollMs ?? 3000);
     if (await checkPort(config.bridgePort)) { log("bridge is back"); return true; }
+    // A launch can be swallowed (an instance that is still shutting down holds the single-instance lock), so it is
+    // retried while waiting; an extra launch of a running app is harmless.
+    if (Date.now() - lastLaunch >= (config.relaunchMs ?? 45_000)) { lastLaunch = Date.now(); launch(); }
   }
   return false;
 }
@@ -538,6 +545,7 @@ export async function runLongRun(userConfig, deps = {}) {
           fingerprint: () => fingerprintOf(config.repo, files, isGit),
           // The controller (Luna by default) also judges a round while it is running, not only between rounds.
           onWatch: config.controller && config.watchMs ? async (w) => {
+            if (config.bridgePort && !(await checkPort(config.bridgePort))) return undefined;
             const progressText = existsSync(progressAbs) ? readFileSync(progressAbs, "utf8") : "";
             const evidence = [
               `Original task (start): ${capText(config.taskText.trim().replace(/\s+/g, " "), 1500)}`,
@@ -577,7 +585,9 @@ export async function runLongRun(userConfig, deps = {}) {
         fingerprint: fingerprintOf(config.repo, files, isGit), now: now(), jitter: deps.jitter ?? Math.random(), opts: config.policy,
       });
       // The controller may pick between continuing and a fresh chat; the policy keeps every hard limit.
-      const consult = config.controller && (decision.action === "continue" || decision.action === "fresh")
+      // The controller is a model behind the same bridge: while the bridge is down a call can only time out.
+      const controllerUsable = config.controller && (!config.bridgePort || await checkPort(config.bridgePort));
+      const consult = controllerUsable && (decision.action === "continue" || decision.action === "fresh")
         && decision.reason !== "rate_limited" && decision.reason !== "waiting_for_login"
         && (round.outcome !== "completed" || decision.state.rounds % config.controllerEvery === 0);
       if (consult) {
@@ -591,7 +601,7 @@ export async function runLongRun(userConfig, deps = {}) {
           if (decision.reason.startsWith("controller_")) log(`controller changed the plan to ${decision.action}`);
         }
       }
-      if (config.controller && decision.action === "fresh") {
+      if (controllerUsable && decision.action === "fresh") {
         const evidence = buildEvidence({ config, state: decision.state, round, verify: effectiveVerify, progressText: progressNow, lastMessage: round.lastMessage, isGit, big: true });
         const written = await askController(config, decision.state, buildBriefPrompt(evidence), "brief", log);
         if (written?.trim()) decision.state.brief = capText(written.trim(), 6000);
