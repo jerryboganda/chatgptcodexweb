@@ -719,7 +719,8 @@ export function compileChatGptWebPrompt(
       // before submitting anything; no context is truncated and no failed upload is replayed.
       const backendModel = parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID ? CHATGPT_WEB_LUNA_MODEL_ID : CHATGPT_WEB_MODEL_ID;
       const stagingEfforts = backendModel === CHATGPT_WEB_LUNA_MODEL_ID ? ["low"] as const
-        : capabilities.proAvailable ? ["max"] as const : ["low", "medium"] as const;
+        : capabilities.proAvailable ? ["max"] as const
+          : parsed._chatgptModelFamily === "6" ? ["medium"] as const : ["low", "medium"] as const;
       const emptyParts = multipart.parts;
       for (const stagingEffort of stagingEfforts) {
         multipart.parts = emptyParts;

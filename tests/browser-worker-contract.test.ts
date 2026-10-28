@@ -3553,7 +3553,10 @@ test("Bigger Context stages use the lowest account mode that can carry the stage
   // a 202,068-character stage "message too long"; both must use Medium instead.
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 78_062, 274_680, "6").effort).toBe("medium");
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 51_279, 202_068, "6").effort).toBe("medium");
-  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 20_000, 180_000, "6").effort).toBe("low");
+  // GPT-6 never stages through Instant, however small the stage is.
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 20_000, 180_000, "6").effort).toBe("medium");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 20_000, 2_000, "6").effort).toBe("medium");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 10_000, 20_000, "6").effort).toBe("medium");
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 20_000, 180_001, "6").effort).toBe("medium");
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 100_000, 600_000, "6").effort).toBe("max");
   expect(() => assertChatGptWebInputWithinLimits(1, 1, "gpt-5.6-sol", "low", pro, 180_000, "6")).not.toThrow();

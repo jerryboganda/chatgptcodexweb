@@ -850,7 +850,9 @@ export function resolveChatGptWebMultipartStagingMode(
   const efforts: readonly ChatGptWebModelMode["effort"][] = modelId === CHATGPT_WEB_LUNA_MODEL_ID ? ["low"] : capabilities.proAvailable
     ? ["low", "medium", "max"]
     : ["low", "medium"];
-  for (const effort of efforts) {
+  // GPT-6 is only used through Medium, High and Extra High; its Instant mode is never a staging
+  // target, even when a stage would fit its composer.
+  for (const effort of stagingFamily === "6" && modelId !== CHATGPT_WEB_LUNA_MODEL_ID ? efforts.filter(e => e !== "low") : efforts) {
     const mode = resolveChatGptWebModelMode(modelId, effort, capabilities);
     const limits = resolveChatGptWebTransportLimits(modelId, effort, capabilities, stagingFamily);
     const messageTokenLimit = resolveChatGptWebStagingTokenBudget(modelId, effort, capabilities);
