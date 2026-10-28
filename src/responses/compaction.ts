@@ -49,6 +49,19 @@ Include:
 
 Be concise, structured, and focused on helping the next LLM seamlessly continue the work.`;
 
+/**
+ * Added by this bridge after COMPACT_PROMPT. The model writing a checkpoint tends to describe only
+ * the latest task; a rule, code or decision given early in the chat is then lost for good, because
+ * each later checkpoint can only carry forward what the previous one kept.
+ */
+export const COMPACT_CONTINUITY_GUIDANCE = [
+  "Keep long-range continuity, not just the latest task:",
+  "- Start the summary with a section titled \"Standing instructions and facts\". Copy, word for word, every rule, preference, constraint, identifier, code, name, path and decision that any user message gave at any point in the conversation, including ones unrelated to the latest task and ones recorded in an earlier checkpoint summary. Do not paraphrase them or drop them because they look irrelevant now.",
+  "- Carry forward everything an earlier checkpoint summary recorded, merged with what happened since. Never replace it with a summary of only the most recent turns.",
+  "- Then describe the work in order: what was asked, what was done, what is still open.",
+].join("
+");
+
 /** Mirrors codex-rs core/templates/compact/summary_prefix.md (framing for a replayed summary). */
 export const SUMMARY_PREFIX = "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:";
 

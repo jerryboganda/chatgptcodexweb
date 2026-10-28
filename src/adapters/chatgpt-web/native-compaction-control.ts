@@ -1,4 +1,4 @@
-import { COMPACT_PROMPT } from "../../responses/compaction";
+import { COMPACT_CONTINUITY_GUIDANCE, COMPACT_PROMPT } from "../../responses/compaction";
 import type { CompactionTransactionHandle } from "./compaction-transaction";
 
 export const CODEX_COMPACTION_CONTROL_WIRE_NAME = "codex.control.compaction_handoff";
@@ -58,6 +58,7 @@ export function zeroRiskActiveCompactionToolResultInstruction(toolExecuted: bool
       ? "Consume that canonical result, stop ordinary task work now, and do not call any more work tools."
       : "Stop ordinary task work now and do not call any more work tools.",
     COMPACT_PROMPT,
+    COMPACT_CONTINUITY_GUIDANCE,
     "Call no more work tools. Return only the complete checkpoint summary to Codex with codex_turn_complete.",
     `</${CODEX_ACTIVE_COMPACTION_REQUEST_MARKER}>`,
   ].join("\n");
@@ -70,6 +71,7 @@ export function structuredCompactionHandoffInstruction(
   return [
     "Automatic Codex context compaction has started. Stop ordinary task work and do not call any more work tools.",
     COMPACT_PROMPT,
+    COMPACT_CONTINUITY_GUIDANCE,
     ...compactionControlBinding(transaction, appName),
     "After the control call returns submitted=true, call no more tools. The bridge will close this one-purpose Web response after accepting the checkpoint.",
     "If the call is rejected or fails, stop and report its actual error. Do not retry through another tool or claim the summary was submitted without submitted=true.",
