@@ -51,9 +51,24 @@ if (scenario.progress) {
 }
 if (scenario.append) appendFileSync(scenario.append.file, scenario.append.text);
 
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+if (scenario.type === "crash_early") { process.stderr.write(scenario.message ?? "bridge refused"); process.exit(3); }
+
 emit({ type: "thread.started", thread_id: threadId });
 emit({ type: "turn.started" });
 if (scenario.type === "hang") await new Promise(() => {});
+// A compaction death spiral: the same reconnect/compaction error again and again, nothing ever changes.
+if (scenario.type === "loop") for (;;) { emit({ type: "error", message: "Reconnecting... 1/2 (stream disconnected before completion: ChatGPT compaction had no observed activity for 300000ms)" }); await pause(100); }
+// Busy but going nowhere: commands keep running, no file is touched.
+if (scenario.type === "spin") for (;;) { emit({ type: "item.completed", item: { type: "command_execution", command: "Get-Content src/a.js", exit_code: 0 } }); await pause(100); }
+// A slow but healthy round: a new file every 150 ms for `steps` steps, then it finishes.
+if (scenario.type === "work") {
+  for (let i = 0; i < (scenario.steps ?? 12); i += 1) {
+    writeFileSync(`work-${i}.txt`, String(i));
+    emit({ type: "item.completed", item: { type: "command_execution", command: `step ${i}`, exit_code: 0 } });
+    await pause(150);
+  }
+}
 if (scenario.type === "crash") { process.stderr.write(scenario.message ?? "boom"); process.exit(3); }
 if (scenario.type === "fail") {
   for (let i = 1; i <= 2; i += 1) emit({ type: "error", message: `Reconnecting... ${i}/5 (${scenario.message})` });

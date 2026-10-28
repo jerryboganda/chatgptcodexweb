@@ -92,8 +92,30 @@ function fingerprintOf(repo, files, isGit) {
   return sha(`${entries.join("\n")}\n${sha(progress)}`);
 }
 
+/** Keeps one copy of the progress file per round so a handoff can notice (and recover from) a file that lost its content. */
+function snapshotProgress(dirs, files, roundNo) {
+  try {
+    if (!existsSync(files.progressAbs)) return;
+    const text = readFileSync(files.progressAbs, "utf8");
+    if (!text.trim()) return;
+    mkdirSync(dirs.history, { recursive: true });
+    writeFileSync(path.join(dirs.history, `${String(roundNo).padStart(4, "0")}.md`), text);
+  } catch {}
+}
+
+function largestSnapshot(dirs) {
+  let best = "";
+  try {
+    for (const name of readdirSync(dirs.history).sort()) {
+      const text = readFileSync(path.join(dirs.history, name), "utf8");
+      if (text.length >= best.length) best = text;
+    }
+  } catch {}
+  return best;
+}
+
 /** Runs one Codex round and reports how it ended. Never throws. */
-function runCodexRound({ config, prompt, kind, threadId, roundNo, dirs, onEvent }) {
+function runCodexRound({ config, prompt, kind, threadId, roundNo, dirs, onEvent, fingerprint }) {
   const common = [
     "--json", "--skip-git-repo-check", "-m", config.model, "-c", `model_reasoning_effort="${config.effort}"`,
     ...(config.compactLimit ? ["-c", `model_auto_compact_token_limit=${config.compactLimit}`] : []),
@@ -124,6 +146,16 @@ function runCodexRound({ config, prompt, kind, threadId, roundNo, dirs, onEvent 
     let lastError = "";
     let stalled = false;
     let settled = false;
+    // A round can look busy while going nowhere: reconnect and compaction errors keep arriving, or the model
+    // re-reads the project after every compaction. Neither counts as activity; what counts is output that is not
+    // a reconnect notice, and a change to the repository or the progress file.
+    let stuckWhy = "";
+    let lastFp = fingerprint?.();
+    let lastFpAt = Date.now();
+    let lastChange = Date.now();
+    let compactionStreak = 0;
+    let compactionFp;
+    const stuck = (why) => { if (!stuckWhy) stuckWhy = why; killTree(child); };
 
     const handleLine = (line) => {
       if (!line.trim()) return;
@@ -131,24 +163,43 @@ function runCodexRound({ config, prompt, kind, threadId, roundNo, dirs, onEvent 
       let event;
       try { event = JSON.parse(line); } catch { return; }
       onEvent?.(event);
+      const reconnecting = event.type === "error" && /^Reconnecting/i.test(event.message ?? "");
+      if (!reconnecting) lastActivity = Date.now();
       if (event.type === "thread.started" && event.thread_id) result.threadId = event.thread_id;
       else if (event.type === "turn.completed") sawCompleted = true;
       else if (event.type === "turn.failed") turnFailed = event.error?.message ?? "turn failed";
-      else if (event.type === "error" && event.message && !/^Reconnecting/i.test(event.message)) lastError = event.message;
+      else if (event.type === "error" && event.message && !reconnecting) lastError = event.message;
       else if (event.type === "item.completed" && event.item?.type === "agent_message") result.lastMessage = event.item.text ?? "";
+      if (event.type === "error" && /compact/i.test(event.message ?? "") && fingerprint && config.policy.compactionErrorsBeforeFresh) {
+        const fp = fingerprint();
+        compactionStreak = fp === compactionFp ? compactionStreak + 1 : 1;
+        compactionFp = fp;
+        if (compactionStreak >= config.policy.compactionErrorsBeforeFresh) {
+          stuck(`${compactionStreak} compaction failures in a row without any change to the repository or progress file`);
+        }
+      }
     };
     child.stdout.on("data", (chunk) => {
-      lastActivity = Date.now();
       buffer += chunk.toString("utf8");
       let at;
       while ((at = buffer.indexOf("\n")) >= 0) { handleLine(buffer.slice(0, at)); buffer = buffer.slice(at + 1); }
     });
-    child.stderr.on("data", (chunk) => { lastActivity = Date.now(); stderrTail = (stderrTail + chunk).slice(-3000); });
+    child.stderr.on("data", (chunk) => { stderrTail = (stderrTail + chunk).slice(-3000); });
     child.stdin.on("error", () => {});
     child.stdin.end(prompt);
 
+    const fingerprintEveryMs = Math.min(30_000, config.pollMs * 6);
     const watchdog = setInterval(() => {
-      if (Date.now() - lastActivity > config.stallMs) { stalled = true; killTree(child); }
+      const at = Date.now();
+      if (at - lastActivity > config.stallMs) { stalled = true; killTree(child); return; }
+      if (fingerprint && config.progressMs && at - lastFpAt >= fingerprintEveryMs) {
+        lastFpAt = at;
+        const fp = fingerprint();
+        if (fp !== lastFp) { lastFp = fp; lastChange = at; }
+        else if (at - lastChange > config.progressMs) {
+          stuck(`no change to the repository or progress file for ${Math.max(1, Math.round(config.progressMs / 60_000))} min while the round kept running`);
+        }
+      }
     }, config.pollMs);
 
     const finish = (exitCode, spawnError) => {
@@ -159,6 +210,7 @@ function runCodexRound({ config, prompt, kind, threadId, roundNo, dirs, onEvent 
       result.durationMs = Date.now() - startedAt;
       result.exitCode = exitCode;
       if (spawnError) { result.outcome = "failed"; result.failureText = `spawn failed: ${spawnError.message}`; }
+      else if (stuckWhy) { result.outcome = "stuck"; result.failureText = stuckWhy; }
       else if (stalled) { result.outcome = "stalled"; result.failureText = `no output for ${Math.round(config.stallMs / 1000)}s`; }
       else if (turnFailed || (exitCode !== 0 && !sawCompleted)) {
         result.outcome = "failed";
@@ -336,6 +388,7 @@ export async function runLongRun(userConfig, deps = {}) {
   };
   config.policy = { ...DEFAULTS, ...(userConfig.policy ?? {}) };
   config.stallMs = userConfig.stallMs ?? config.policy.stallMinutes * 60_000;
+  config.progressMs = userConfig.progressMs ?? config.policy.roundProgressMinutes * 60_000;
   config.repo = path.resolve(config.repo);
   config.stateDir = path.resolve(config.stateDir ?? path.join(config.repo, ".longrun"));
   config.codex = config.codex ?? findCodex();
@@ -349,7 +402,7 @@ export async function runLongRun(userConfig, deps = {}) {
   const sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const now = deps.now ?? (() => Date.now());
 
-  const dirs = { state: config.stateDir, rounds: path.join(config.stateDir, "rounds") };
+  const dirs = { state: config.stateDir, rounds: path.join(config.stateDir, "rounds"), history: path.join(config.stateDir, "progress-history") };
   mkdirSync(dirs.rounds, { recursive: true });
   const inRepo = !path.relative(config.repo, config.stateDir).startsWith("..");
   const progressAbs = path.join(config.stateDir, "PROGRESS.md");
@@ -407,25 +460,42 @@ export async function runLongRun(userConfig, deps = {}) {
       const progressText = existsSync(progressAbs) ? readFileSync(progressAbs, "utf8") : "";
       const promptInput = { task: taskText, files, verifyCommand: config.verify };
       const { hint, brief } = state;
+      const roundConfig = config.compactLimit && (state.compactScale ?? 1) > 1
+        ? { ...config, compactLimit: Math.round(config.compactLimit * state.compactScale) } : config;
+      if (roundConfig !== config) log(`forced compaction limit raised to ${roundConfig.compactLimit} tokens after a stuck round`);
       const prompt = kind === "initial" ? buildInitialPrompt(promptInput)
         : kind === "continue" ? buildContinuePrompt({ round: roundNo, files, verifyCommand: config.verify, verify: verifyPrev, reason: state.reason, hint })
           : buildHandoffPrompt({
-            ...promptInput, progressText, round: roundNo, reason: state.reason, verify: verifyPrev, brief, hint,
+            ...promptInput, progressText, earlierProgress: largestSnapshot(dirs), round: roundNo, reason: state.reason, verify: verifyPrev, brief, hint,
+            // The new chat's window is about compactLimit tokens (roughly 4 characters each); quote at most about half of it.
+            budgetChars: roundConfig.compactLimit ? roundConfig.compactLimit * 2 : undefined,
             gitLog: isGit ? git(config.repo, ["log", "--oneline", "-30"]).out : "",
             gitStatus: isGit ? capText(git(config.repo, ["status", "--short"]).out, 3000) : "",
           });
       state.hint = undefined;
-      state.brief = undefined;
       if (kind !== "continue") state.threadId = undefined;
+
+      // A chat is recorded the moment it starts, not when its round ends, so a crashed supervisor (or machine)
+      // resumes the same chat instead of abandoning it; the briefing is kept until a handoff chat really started.
+      const adoptThread = (id) => {
+        if (!id || id === state.threadId) return;
+        state.threadId = id;
+        state.threads.push({ id, firstRound: roundNo, reason: kind === "initial" ? "initial" : state.reason ?? kind });
+        state.pending = "continue";
+        state.brief = undefined;
+        writeJsonAtomic(stateFile, state);
+      };
 
       log(`round ${roundNo}: ${kind}${state.threadId ? ` (chat ${state.threadId})` : ""}`);
       const round = bridgeUp
-        ? await runCodexRound({ config, prompt, kind, threadId: state.threadId, roundNo, dirs })
+        ? await runCodexRound({
+          config: roundConfig, prompt, kind, threadId: state.threadId, roundNo, dirs,
+          onEvent: (event) => { if (event.type === "thread.started") adoptThread(event.thread_id); },
+          fingerprint: () => fingerprintOf(config.repo, files, isGit),
+        })
         : { outcome: "failed", failureText: "bridge unreachable (ECONNREFUSED)", durationMs: 0 };
-      if (round.threadId && round.threadId !== state.threadId) {
-        state.threadId = round.threadId;
-        state.threads.push({ id: round.threadId, firstRound: roundNo, reason: kind === "initial" ? "initial" : state.reason ?? kind });
-      }
+      adoptThread(round.threadId);
+      snapshotProgress(dirs, files, roundNo);
       log(`round ${roundNo} ${round.outcome} after ${Math.round(round.durationMs / 1000)}s${round.failureText ? `: ${capText(round.failureText.replace(/\s+/g, " "), 300)}` : ""}`);
 
       let verify;
@@ -491,7 +561,7 @@ function parseArgs(argv) {
     "--state-dir": "stateDir", "--bridge-port": ["bridgePort", Number], "--compact-limit": ["compactLimit", Number],
     "--launcher": "launcher", "--codex": "codexExe", "--checkpoint-prefix": "checkpointPrefix", "--notify-cmd": "notifyCmd",
     "--controller-model": "controllerModel", "--controller-effort": "controllerEffort", "--controller-every": ["controllerEvery", Number],
-    "--max-hours": ["policy.maxHours", Number], "--stall-minutes": ["policy.stallMinutes", Number],
+    "--max-hours": ["policy.maxHours", Number], "--stall-minutes": ["policy.stallMinutes", Number], "--progress-minutes": ["policy.roundProgressMinutes", Number],
     "--max-failures": ["policy.maxConsecutiveFailures", Number], "--max-rounds": ["policy.maxRounds", Number],
   };
   const bools = { "--allow-dirty": "allowDirty", "--no-branch": ["branch", false], "--no-checkpoint": "noCheckpoint", "--restart": "restart", "--no-keep-awake": ["keepAwake", false], "--no-controller": ["controller", false], "--accept-verify-only": ["policy.acceptVerifyOnly", true] };
@@ -518,6 +588,7 @@ const USAGE = `Usage: node longrun.mjs --repo <dir> --task <file.md> --verify "<
   --no-controller              use only the built-in policy        --controller-every <n>  consult after every n-th ok round
   --sandbox <mode>             workspace-write | danger-full-access (default workspace-write)
   --max-hours <n>              wall-clock budget (default 24)       --stall-minutes <n>     kill a silent round (default 30)
+  --progress-minutes <n>       a running round that changes nothing for n minutes is killed, next chat is fresh (default 40, 0 = off)
   --compact-limit <tokens>     force earlier auto-compaction (testing)
   --accept-verify-only         finish when the command passes even without STATUS: DONE
   --allow-dirty  --no-branch  --no-checkpoint  --restart  --no-keep-awake

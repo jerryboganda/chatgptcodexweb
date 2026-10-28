@@ -6,6 +6,7 @@ export const KIND = Object.freeze({
   RATE_LIMIT: "rate_limit",
   AUTH: "auth",
   CONTEXT: "context",
+  STUCK: "stuck",
   FATAL: "fatal",
 });
 
@@ -21,6 +22,10 @@ export const DEFAULTS = Object.freeze({
   noProgressRoundsBeforeFresh: 3,
   noProgressRoundsBeforeStop: 6,
   maxContextFreshInARow: 4,
+  roundProgressMinutes: 40,
+  compactionErrorsBeforeFresh: 3,
+  maxStuckInARow: 3,
+  maxCompactScale: 4,
   maxAuthWaits: 6,
   authWaitMs: 10 * MINUTE,
   rateLimitDefaultWaitMs: 15 * MINUTE,
@@ -143,7 +148,7 @@ export function buildContinuePrompt({ round, files, verifyCommand, verify, reaso
     hint ? `Supervisor note: ${hint}` : "",
     `Re-read ${files.progress}, pick up at its NEXT step and do not redo finished work.`,
     verify && !verify.ok
-      ? `The acceptance command \`${verifyCommand}\` last failed. Its output ended with:\n${capText(verify.tail, 4000)}`
+      ? `The acceptance command \`${verifyCommand}\` last failed. Its output ended with:\n${capText(verify.tail, 4000)}\nWhile it fails, ${files.progress} must say \`STATUS: IN_PROGRESS\`.`
       : verify?.ok
         ? `The acceptance command \`${verifyCommand}\` currently passes. If every requirement is truly met, set \`STATUS: DONE\` in ${files.progress}; otherwise keep working through the plan.`
         : "",
@@ -151,18 +156,36 @@ export function buildContinuePrompt({ round, files, verifyCommand, verify, reaso
   ].filter(Boolean).join("\n");
 }
 
-export function buildHandoffPrompt({ task, files, verifyCommand, progressText, gitLog, gitStatus, verify, round, reason, brief, hint }) {
+/** The progress file lost most of its content since an earlier snapshot (a model "tidied" it too hard, or overwrote it). */
+export function progressShrank(current, earlier) {
+  const before = String(earlier ?? "").length;
+  return before > 1500 && String(current ?? "").trim().length < before * 0.4;
+}
+
+const STUCK_NOTE = "The previous chat ran for a long time without changing anything (it kept re-reading files or failing to compact its context). In this chat: do not dump whole files or whole directories into the conversation, read only what the next step needs, write the plan into the progress file first, and make a small change and commit it early.";
+
+/**
+ * Prompt for a brand-new chat that must continue the job. `budgetChars` (the context size the chat will have,
+ * roughly) shrinks the quoted task, progress file and briefing so the handoff itself cannot overflow a small window.
+ */
+export function buildHandoffPrompt({ task, files, verifyCommand, progressText, earlierProgress, gitLog, gitStatus, verify, round, reason, brief, hint, budgetChars }) {
+  const budget = Number.isFinite(budgetChars) && budgetChars > 0 ? budgetChars : Infinity;
+  const share = (fraction, hardCap, floor) => Math.min(hardCap, Math.max(floor, Math.round(budget * fraction)));
   return [
     "You are taking over a long-running task from a previous chat that was interrupted. The previous chat's context is NOT available to you; this message, the repository and the progress file are your complete memory.",
     "",
     "=== ORIGINAL TASK ===",
-    capText(task.trim(), 30_000),
+    capText(task.trim(), share(0.35, 30_000, 4000)),
     "",
-    ...(brief ? ["=== BRIEFING FROM THE SUPERVISOR ===", capText(brief, 8000), ""] : []),
+    ...(brief ? ["=== BRIEFING FROM THE SUPERVISOR ===", capText(brief, share(0.15, 8000, 2000)), ""] : []),
     ...(hint ? [`Supervisor note: ${hint}`, ""] : []),
+    ...(reason === "round_stuck" ? [`Supervisor note: ${STUCK_NOTE}`, ""] : []),
     `=== PROGRESS FILE (${files.progress}) ===`,
-    progressText ? capText(progressText, 40_000) : "(missing: inspect the repository and git history, then recreate it)",
+    progressText ? capText(progressText, share(0.35, 40_000, 6000)) : "(missing: inspect the repository and git history, then recreate it)",
     "",
+    ...(earlierProgress && progressShrank(progressText, earlierProgress)
+      ? ["=== EARLIER, LONGER VERSION OF THE PROGRESS FILE (the current one lost content; merge anything still true back into it) ===", capText(earlierProgress, share(0.15, 12_000, 3000)), ""]
+      : []),
     "=== RECENT COMMITS ===",
     gitLog || "(none)",
     "",
@@ -193,6 +216,7 @@ export function decideNext({ state, round, verify, progress, fingerprint, now, j
     next.consecutiveFailures = 0;
     next.sameThreadFailures = 0;
     next.contextFreshInARow = 0;
+    next.stuckInARow = 0;
     next.authWaits = 0;
     const accepted = verify ? verify.ok : true;
     if (accepted && (progress.done || opts.acceptVerifyOnly)) {
@@ -206,6 +230,22 @@ export function decideNext({ state, round, verify, progress, fingerprint, now, j
       return { action: "fresh", reason: "no_progress", waitMs: 0, state: next };
     }
     return { action: "continue", reason: verify && !verify.ok ? "verify_failing" : "not_done", waitMs: 0, state: next };
+  }
+
+  // A round that kept running without changing anything (a compaction or re-reading loop) has a poisoned
+  // context: resuming it would only repeat the loop, so the next round always starts a fresh chat.
+  if (round.outcome === "stuck") {
+    next.lastKind = KIND.STUCK;
+    next.failuresByKind = { ...state.failuresByKind, [KIND.STUCK]: (state.failuresByKind[KIND.STUCK] ?? 0) + 1 };
+    next.stuckInARow = (state.stuckInARow ?? 0) + 1;
+    // The usual cause is a context window that is too small for the job (compact, forget, re-read, repeat), so
+    // the next chats get a larger forced compaction limit when one was set with --compact-limit.
+    next.compactScale = Math.min(opts.maxCompactScale, (state.compactScale ?? 1) * 1.5);
+    next.consecutiveFailures = state.consecutiveFailures + 1;
+    next.sameThreadFailures = 0;
+    if (next.consecutiveFailures > opts.maxConsecutiveFailures) return stop("too_many_failures");
+    if (next.stuckInARow > opts.maxStuckInARow) return stop("stuck_loop");
+    return { action: "fresh", reason: "round_stuck", waitMs: backoffMs(next.consecutiveFailures, jitter, opts), state: next };
   }
 
   // failed | stalled | crashed
@@ -255,6 +295,8 @@ export function initialState({ id, taskHash, now, branch }) {
     consecutiveFailures: 0,
     sameThreadFailures: 0,
     contextFreshInARow: 0,
+    stuckInARow: 0,
+    compactScale: 1,
     authWaits: 0,
     noProgressRounds: 0,
     lastFingerprint: "",
@@ -354,7 +396,7 @@ export function mergeControllerAdvice({ decision, advice, state, opts = DEFAULTS
   let action = decision.action;
   if (advice.action === "continue") action = "continue";
   if (advice.action === "fresh" || advice.contextHealth === "polluted") action = "fresh";
-  if (decision.reason === "context_exhausted_in_chat") action = "fresh";
+  if (decision.reason === "context_exhausted_in_chat" || decision.reason === "round_stuck") action = "fresh";
   if (advice.action === "stop" && state.consecutiveFailures >= 3) {
     return { ...merged, action: "stop", reason: "controller_stop", waitMs: 0, state: { ...merged.state, status: "stopped", stopReason: "controller_stop" } };
   }

@@ -30,12 +30,23 @@ Windows: `scripts\longrun\longrun.cmd` takes the same arguments.
 | usage limit | wait for the time in the message (default 15 min), not counted as a failure |
 | signed out | wait 10 min, up to 6 times, then stop with `needs_login` |
 | launcher or bridge not running | start the launcher and wait for the bridge |
+| a round that keeps running but changes nothing for `--progress-minutes` (default 40), or fails to compact its context 3 times in a row | kill it and move to a fresh chat (a poisoned chat is never resumed); a forced `--compact-limit` is raised by 50% for the next chats; after 3 such rounds in a row stop with `stuck_loop` |
 | rounds that change nothing | fresh chat after 3, stop after 6 (`no_progress`) |
 | unknown model / configuration error | stop at once (`fatal_error`) |
 | supervisor killed or machine restarted | run the same command again: it resumes from `.longrun/state.json` |
 
 A fresh chat receives the original task, the progress file, recent commits, uncommitted changes, the last
 acceptance output and a briefing written by the controller. Nothing depends on the old chat's memory.
+
+Details that keep the handoff safe:
+
+- A chat is written to `state.json` the moment it starts, so a crashed supervisor resumes that chat instead of abandoning it.
+- The briefing is kept until a handoff chat has really started; a handoff that dies early is retried with it.
+- With `--compact-limit`, the quoted task, progress file and briefing are shrunk to fit the new chat's window.
+- Every round's progress file is saved in `.longrun/progress-history/`. If the current file lost most of its
+  content, the handoff also carries the longest earlier version.
+- After a stuck round the new chat is told not to dump whole files into the conversation and to commit early.
+- While the acceptance command fails, the model is told to keep `STATUS: IN_PROGRESS`.
 
 ## The controller
 
@@ -60,6 +71,7 @@ badly, the built-in policy decides alone.
 - Keep the machine awake: the script holds a Windows keep-awake request while it runs (`--no-keep-awake` to disable).
 - Survive a reboot: register the same command with Windows Task Scheduler (run at logon). It resumes.
 - Be told when it ends: `--notify-cmd "<command>"` runs with `LONGRUN_STATUS` and `LONGRUN_REASON` set.
+- Reconnect and compaction errors do not count as activity for the silent-round watchdog (`--stall-minutes`).
 - Inspect: `.longrun/REPORT.md`, `.longrun/STATUS.json`, `.longrun/events.jsonl`, `.longrun/rounds/`.
 - `--sandbox danger-full-access` lets the model run `git commit` itself on Windows; the default
   `workspace-write` cannot write `.git`, and the supervisor's checkpoint commits cover that.
