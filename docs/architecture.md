@@ -224,6 +224,14 @@ Waiting is bounded, and Codex never sees it:
 The "Too many requests" dialog is different: it is a deliberate hard stop that is never retried
 automatically.
 
+A compaction checkpoint always begins with a bridge-written task ledger (`TASK_LEDGER_BEGIN` …
+`TASK_LEDGER_END`): the original first user task (verbatim, capped at 6,000 characters with an explicit
+omission note), the merged standing instructions, and the last twelve tool actions as names and
+outcomes only, never file contents or credentials. The ledger is rebuilt from the full canonical
+history on every checkpoint, whatever the model wrote, and the next checkpoint reads the previous
+ledger back, so the original task outlives the history that first held it. The fresh summarizer's
+110,000-byte prompt budget and the 20,000-character standing-instruction cap are unchanged.
+
 ## Local ChatGPT Limits
 
 The launcher Limits page is an opt-in estimate of its own accepted browser submissions. Setup

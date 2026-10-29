@@ -266,7 +266,9 @@ descriptions. This updates the compaction tool contract; it does not remove safe
 If the retained chat ends without a submitted summary, if ChatGPT's safety checks block it, or if it
 shows no activity for five minutes (`compaction_handoff_timeout`), the bridge summarizes the complete
 Codex history in a fresh chat instead. Compaction fails, and the existing task history is preserved,
-only when that fresh summary also fails.
+only when that fresh summary also fails. Every checkpoint starts with a bridge-written task ledger
+(the original task, the standing instructions and the latest tool actions, names and outcomes only),
+so these survive however the summary was produced.
 
 ### A tool reports an invalid or expired turn token
 
