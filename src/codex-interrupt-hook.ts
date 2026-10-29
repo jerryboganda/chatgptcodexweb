@@ -5,6 +5,7 @@ import { getStaticTOMLValue, parseTOML, type AST } from "toml-eslint-parser";
 import type { AppConfig } from "./config";
 import { getConfigDir } from "./config";
 import type { InstalledCodexInterruptHook } from "./codex-integration-shared";
+import { hookCommandLine } from "./hook-command";
 
 export const MANAGED_INTERRUPT_HOOK_START =
   "# Managed by codex-chatgpt-web: release the exact Responses request when its Codex turn is interrupted.";
@@ -36,19 +37,6 @@ export function codexInterruptHookHash(command: string): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(identity)).digest("hex")}`;
 }
 
-function posixShellArgument(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-function cmdShellArgument(value: string): string {
-  if (value.includes('"') || /[\r\n]/.test(value)) {
-    throw new Error("Codex interrupt hook command contains an invalid Windows path character");
-  }
-  // Codex executes command hooks through cmd.exe /C on Windows. Quoting every argument preserves
-  // spaces and shell metacharacters in the installed runtime path.
-  return `"${value}"`;
-}
-
 export function codexInterruptHookCommand(
   config: Pick<AppConfig, "runtimeCommand">,
   home = getConfigDir(),
@@ -56,7 +44,8 @@ export function codexInterruptHookCommand(
 ): string {
   const absoluteHome = platform === "win32" ? win32.resolve(home) : posix.resolve(home);
   const args = [...config.runtimeCommand, "--home", absoluteHome, "hook", "interrupt"];
-  return args.map(platform === "win32" ? cmdShellArgument : posixShellArgument).join(" ");
+  // A Windows command with a double-quoted program path is never executed by Codex, so it gets the shapes that are.
+  return hookCommandLine(args, platform);
 }
 
 export function lineEnding(text: string): "\n" | "\r\n" | "\r" {

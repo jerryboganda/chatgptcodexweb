@@ -5,6 +5,7 @@ import type { AppConfig } from "../config";
 import { atomicWriteFile, getConfigDir, preserveUtf8Bom, stripUtf8Bom } from "../config";
 import { canonicalConfigPath, canonicalJson, lineEnding } from "../codex-interrupt-hook";
 import { MANAGED_ROUTE_COMMENT } from "../codex-integration-shared";
+import { hookCommandLine } from "../hook-command";
 import { longrunDirectory } from "./settings";
 
 export const LONGRUN_HOOKS_START =
@@ -21,27 +22,6 @@ export interface LongrunHookCommands {
 
 export type LongrunHookStatus = "missing" | "current" | "stale" | "damaged";
 
-const SAFE_UNQUOTED = /^[A-Za-z0-9_.:\\/~@+=-]+$/;
-
-function posixArgument(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-/**
- * Codex starts a hook command through cmd.exe on Windows, and a command whose program path is in
- * double quotes is not executed there (verified with Codex 0.165: such a hook never runs, with or
- * without spaces in the path). Two shapes were verified to run: plain words when nothing needs
- * quoting, and a PowerShell call with single-quoted paths when something does (a space, for example).
- */
-function windowsCommand(parts: string[]): string {
-  if (parts.every((part) => SAFE_UNQUOTED.test(part))) return parts.join(" ");
-  for (const part of parts) {
-    if (/["%\r\n]/.test(part)) throw new Error("A long-run hook path contains a character Windows cannot pass to a hook command");
-  }
-  const quoted = parts.map((part) => `'${part.replaceAll("'", "''")}'`).join(" ");
-  return `powershell -NoProfile -NonInteractive -Command "& ${quoted}"`;
-}
-
 /** Same launch as the interrupt hook (the installed runtime runs `hook stop` or `hook prompt`), in a shape Codex really executes. */
 export function longrunHookCommands(
   config: Pick<AppConfig, "runtimeCommand">,
@@ -50,8 +30,7 @@ export function longrunHookCommands(
 ): LongrunHookCommands {
   const absoluteHome = platform === "win32" ? win32.resolve(home) : posix.resolve(home);
   const build = (action: string) => {
-    const parts = [...config.runtimeCommand, "--home", absoluteHome, "hook", action];
-    return platform === "win32" ? windowsCommand(parts) : parts.map(posixArgument).join(" ");
+    return hookCommandLine([...config.runtimeCommand, "--home", absoluteHome, "hook", action], platform);
   };
   return { stop: build("stop"), prompt: build("prompt") };
 }

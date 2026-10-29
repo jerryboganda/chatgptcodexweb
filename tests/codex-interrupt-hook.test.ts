@@ -174,9 +174,15 @@ test("Interrupt hook command is absolute, quoted, and bound to the exact applica
     "C:\\Users\\test\\Codex Web GPT",
     "win32",
   )).toBe(
-    '"C:\\Program Files\\Codex Web GPT\\bun.exe" "C:\\Program Files\\Codex Web GPT\\cli.js"'
-      + ' "--home" "C:\\Users\\test\\Codex Web GPT" "hook" "interrupt"',
+    "powershell -NoProfile -NonInteractive -Command \"& 'C:\\Program Files\\Codex Web GPT\\bun.exe' 'C:\\Program Files\\Codex Web GPT\\cli.js'"
+      + " '--home' 'C:\\Users\\test\\Codex Web GPT' 'hook' 'interrupt'\"",
   );
+  // Codex 0.165 never runs a Windows hook whose program path is in double quotes; plain words work.
+  expect(codexInterruptHookCommand(
+    { runtimeCommand: ["C:\\rt\\bun.exe", "C:\\app\\cli.js"] },
+    "C:\\h",
+    "win32",
+  )).toBe("C:\\rt\\bun.exe C:\\app\\cli.js --home C:\\h hook interrupt");
 });
 
 test("Interrupt hook trust hash is deterministic and changes with its exact command", () => {
