@@ -28,6 +28,7 @@ Windows: `scripts\longrun\longrun.cmd` takes the same arguments.
 | round silent for `--stall-minutes` (default 30) | kill it, then resume |
 | chat's context is full or compaction failed | fresh chat with a written briefing |
 | usage limit | wait for the time in the message (default 15 min), not counted as a failure |
+| "model is at capacity" | same, but waits 5 min when the message gives no time |
 | signed out | wait 10 min, up to 6 times, then stop with `needs_login` |
 | launcher or bridge not running | start the launcher and wait for the bridge |
 | a round that keeps running but changes nothing for `--progress-minutes` (default 40), or fails to compact its context 3 times in a row | kill it and move to a fresh chat (a poisoned chat is never resumed); a forced `--compact-limit` is raised by 50% for the next chats; after 3 such rounds in a row stop with `stuck_loop` |
@@ -92,7 +93,7 @@ Type the key only into that prompt, never into a chat. `TYPESAFE_API_KEY` in the
 
 | Mode (`--controller-mode`) | Behaviour |
 | --- | --- |
-| `auto` (default) | Jev answers; the Codex model is asked only for the cases below. No key: same as `luna`. |
+| `auto` (default) | Jev answers; the Codex model is asked only for the cases below. No key: same as `luna`, with a `Jev is OFF` line in the log. |
 | `shadow` | Both are asked and the Codex model acts; Jev's answer is logged and the agreement counted in `REPORT.md`. Use it to judge Jev on your own jobs before trusting it. |
 | `jev` | Jev decides; when it is unsure the policy decides alone. The Codex model only writes briefings. |
 | `luna` | The Codex model only, as before. |
@@ -110,6 +111,16 @@ What Jev decides, and when its answer stands:
 
 If Jev fails three times in a row, or the API rejects the key, Jev is switched off for the rest of the run and the Codex
 model carries on. Every Jev answer is saved as `.longrun/jev-NNNN-<kind>.json` (probabilities, no evidence, no key).
+
+**Jev is on for every run by default.** Anyone who starts a run as this Windows user gets it, because the key is stored
+per user and the default mode is `auto`; no flag is needed. Do not pass `--controller-mode luna` unless you mean to turn
+it off. It does not depend on the Codex model: `--no-controller` switches only the Codex model off, and Jev then decides
+alone (when it is unsure, the policy does). To make a run fail instead of quietly running without Jev (no key, an
+unreadable key, or `luna` mode), pass `--require-jev` or set `LONGRUN_REQUIRE_JEV=1`.
+
+To see whether Jev is deciding in a run, read `.longrun/STATUS.json`: `jev` has `active`, `mode`, `off` (why, when it is
+not active) and the call counts; `REPORT.md` has the same in a `- Jev:` line, and `events.jsonl` starts with
+`Jev is on (...)` or `Jev is OFF: ...`.
 
 What is sent to TypeSafe: the same short evidence summary Luna sees (task start, counters, last messages, acceptance
 output, the start of the progress file, recent commits, uncommitted file names), with credential-looking text masked

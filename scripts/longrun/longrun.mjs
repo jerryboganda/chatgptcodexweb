@@ -404,17 +404,26 @@ async function reclassifyFailure(config, state, text, log) {
 
 /** Turns the controller mode and the stored key into the runtime Jev state, or undefined when Jev stays off. */
 function setupJev(config, userConfig, log) {
-  const mode = config.controllerMode;
-  if (!config.controller || mode === "luna") return undefined;
+  const requested = config.controllerMode;
+  if (requested === "luna") {
+    if (config.requireJev) throw new Error("Jev is required (--require-jev) but the controller mode is luna");
+    return undefined;
+  }
+  // Jev does not depend on the Codex model: with that model switched off nothing can arbitrate, so Jev decides when it
+  // is sure and the policy decides otherwise (what `jev` mode does).
+  const mode = !config.controller && requested === "auto" ? "jev" : requested;
+  const fallback = config.controller ? `${config.controllerModel} decides alone` : "the built-in policy decides alone";
   let client = userConfig.jevClient;
   let secrets = [];
   let origin = "injected client";
   if (!client) {
     const found = loadKey({ file: userConfig.jevKeyFile });
     if (!found.key) {
-      log(found.source === "unreadable"
-        ? `Jev: the stored API key cannot be read (${found.error}); run "node scripts/longrun/jev-key.mjs set" again. ${config.controllerModel} decides alone.`
-        : `Jev is not set up ("node scripts/longrun/jev-key.mjs set"). ${config.controllerModel} decides alone.`);
+      const problem = found.source === "unreadable"
+        ? `the stored API key cannot be read (${found.error}); run "node scripts/longrun/jev-key.mjs set" again`
+        : 'Jev is not set up; run "node scripts/longrun/jev-key.mjs set"';
+      if (config.requireJev) throw new Error(`Jev is required (--require-jev) but ${problem}`);
+      log(`Jev is OFF: ${problem}. ${fallback}.`);
       return undefined;
     }
     client = createJevClient({
@@ -528,7 +537,18 @@ function startKeepAwake(config) {
   });
 }
 
-function writeReport(dirs, state, extra) {
+/** What other sessions read to see whether Jev is deciding in this run. */
+function jevStatus(config, state) {
+  const jev = config.jev;
+  const off = !jev ? (config.controllerMode === "luna" ? "controller mode luna" : "not set up") : jev.disabled;
+  return {
+    active: Boolean(jev) && !jev.disabled, mode: jev?.mode ?? config.controllerMode, ...(off ? { off } : {}),
+    calls: state.jevCalls ?? 0, answeredAlone: state.jevAccepted ?? 0, sentOn: state.jevEscalated ?? 0,
+    failures: state.jevFailures ?? 0, agreed: state.jevAgree ?? 0, disagreed: state.jevDisagree ?? 0,
+  };
+}
+
+function writeReport(dirs, state, extra, jev) {
   const lines = [
     "# Long-run report", "",
     `- Status: **${state.status}**${state.stopReason ? ` (${state.stopReason})` : ""}`,
@@ -538,6 +558,7 @@ function writeReport(dirs, state, extra) {
     `- Started: ${new Date(state.startedAt).toISOString()}`,
     `- Failures by kind: ${JSON.stringify(state.failuresByKind)}`,
     `- Controller calls: ${state.controllerCalls ?? 0} (unanswered: ${state.controllerFailures ?? 0})`,
+    ...(jev ? [`- Jev: ${jev.active ? `on (${jev.mode})` : `OFF (${jev.off})`}`] : []),
     ...(state.jevCalls
       ? [`- Jev calls: ${state.jevCalls} (answered alone: ${state.jevAccepted ?? 0}, sent on to the Codex model: ${state.jevEscalated ?? 0}, failed: ${state.jevFailures ?? 0}; agreed with the Codex model on ${state.jevAgree ?? 0} of ${(state.jevAgree ?? 0) + (state.jevDisagree ?? 0)})`]
       : []),
@@ -548,7 +569,7 @@ function writeReport(dirs, state, extra) {
   writeFileSync(path.join(dirs.state, "REPORT.md"), lines.join("\n"));
   writeJsonAtomic(path.join(dirs.state, "STATUS.json"), {
     status: state.status, stopReason: state.stopReason, rounds: state.rounds, branch: state.branch,
-    threads: state.threads.length, lastVerify: state.lastVerify, updatedAt: new Date().toISOString(),
+    threads: state.threads.length, lastVerify: state.lastVerify, ...(jev ? { jev } : {}), updatedAt: new Date().toISOString(),
   });
 }
 
@@ -574,6 +595,7 @@ export async function runLongRun(userConfig, deps = {}) {
   // Jev answers the routine controller questions first and the Codex model only gets the uncertain ones (see jev.mjs).
   config.controllerMode = userConfig.controllerMode ?? process.env.LONGRUN_CONTROLLER_MODE ?? "auto";
   if (!JEV_MODES.includes(config.controllerMode)) throw new Error(`Unknown controller mode "${config.controllerMode}" (use ${JEV_MODES.join(", ")})`);
+  config.requireJev = userConfig.requireJev ?? /^(1|true|yes)$/i.test(process.env.LONGRUN_REQUIRE_JEV ?? "");
   const sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const now = deps.now ?? (() => Date.now());
 
@@ -669,7 +691,7 @@ export async function runLongRun(userConfig, deps = {}) {
           onEvent: (event) => { if (event.type === "thread.started") adoptThread(event.thread_id); },
           fingerprint: () => fingerprintOf(config.repo, files, isGit),
           // The controller (Luna by default) also judges a round while it is running, not only between rounds.
-          onWatch: config.controller && config.watchMs ? async (w) => {
+          onWatch: (config.controller || config.jev) && config.watchMs ? async (w) => {
             if (config.bridgePort && !(await checkPort(config.bridgePort))) return undefined;
             const progressText = existsSync(progressAbs) ? readFileSync(progressAbs, "utf8") : "";
             const evidence = [
@@ -685,6 +707,7 @@ export async function runLongRun(userConfig, deps = {}) {
             ].filter(Boolean).join("\n\n");
             const jev = config.jev ? await consultJev(config, state, "watch", evidence, undefined, log) : undefined;
             if (jev?.final) return jev.advice;
+            if (!config.controller) return undefined;
             const answer = await askController(config, state, buildWatchPrompt(evidence), "watch", log);
             const advice = normalizeWatchAdvice(extractJson(answer));
             if (answer !== undefined && !advice) log("controller watch answered in an unexpected format; ignoring it");
@@ -720,14 +743,15 @@ export async function runLongRun(userConfig, deps = {}) {
       // The controller may pick between continuing and a fresh chat; the policy keeps every hard limit.
       // The controller is a model behind the same bridge: while the bridge is down a call can only time out.
       const controllerUsable = config.controller && (!config.bridgePort || await checkPort(config.bridgePort));
-      const consult = controllerUsable && (decision.action === "continue" || decision.action === "fresh")
+      const jevUsable = Boolean(config.jev) && !config.jev.disabled && bridgeUp;
+      const consult = (controllerUsable || jevUsable) && (decision.action === "continue" || decision.action === "fresh")
         && decision.reason !== "rate_limited" && decision.reason !== "waiting_for_login"
         && (round.outcome !== "completed" || decision.state.rounds % config.controllerEvery === 0);
       if (consult) {
         const evidence = buildEvidence({ config, state: decision.state, round, proposal: decision, verify: effectiveVerify, progressText: progressNow, lastMessage: round.lastMessage, isGit });
         const jev = config.jev ? await consultJev(config, decision.state, "decide", evidence, decision.action, log) : undefined;
         let advice = jev?.advice;
-        if (!jev?.final) {
+        if (!jev?.final && controllerUsable) {
           const answer = await askController(config, decision.state, buildDecidePrompt(evidence), "decide", log);
           advice = normalizeAdvice(extractJson(answer));
           if (answer !== undefined && !advice) { decision.state.controllerFailures += 1; log("controller answered in an unexpected format; ignoring it"); }
@@ -747,7 +771,7 @@ export async function runLongRun(userConfig, deps = {}) {
       state = { ...decision.state, pending: decision.action === "fresh" ? "fresh" : "continue", reason: decision.reason };
       if (decision.action === "fresh") state.threadId = undefined;
       writeJsonAtomic(stateFile, state);
-      writeReport(dirs, state);
+      writeReport(dirs, state, undefined, jevStatus(config, state));
       log(`decision: ${decision.action} (${decision.reason})${decision.waitMs ? `, waiting ${Math.round(decision.waitMs / 1000)}s` : ""}`, { round: roundNo });
       await deps.afterRound?.(state, round);
       if (decision.waitMs) await sleep(decision.waitMs);
@@ -777,7 +801,7 @@ function parseArgs(argv) {
     "--max-hours": ["policy.maxHours", Number], "--stall-minutes": ["policy.stallMinutes", Number], "--progress-minutes": ["policy.roundProgressMinutes", Number], "--watch-minutes": ["policy.watchMinutes", Number],
     "--max-failures": ["policy.maxConsecutiveFailures", Number], "--max-rounds": ["policy.maxRounds", Number],
   };
-  const bools = { "--allow-dirty": "allowDirty", "--no-branch": ["branch", false], "--no-checkpoint": "noCheckpoint", "--restart": "restart", "--no-keep-awake": ["keepAwake", false], "--no-controller": ["controller", false], "--accept-verify-only": ["policy.acceptVerifyOnly", true] };
+  const bools = { "--allow-dirty": "allowDirty", "--no-branch": ["branch", false], "--no-checkpoint": "noCheckpoint", "--restart": "restart", "--no-keep-awake": ["keepAwake", false], "--no-controller": ["controller", false], "--require-jev": "requireJev","--accept-verify-only": ["policy.acceptVerifyOnly", true] };
   const set = (key, value) => { if (key.startsWith("policy.")) out.policy[key.slice(7)] = value; else out[key] = value; };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -798,8 +822,9 @@ const USAGE = `Usage: node longrun.mjs --repo <dir> --task <file.md> --verify "<
   --effort medium|high|xhigh   effort of the coding chat (default xhigh)   --model <id>   (default chatgpt-web/gpt-6-sol, web quota)
   --controller-model <id>      small model that supervises (default gpt-6-luna, Codex quota; env LONGRUN_CONTROLLER_MODEL)
   --controller-effort <e>      its effort (default high; env LONGRUN_CONTROLLER_EFFORT)
-  --no-controller              use only the built-in policy        --controller-every <n>  consult after every n-th ok round
+  --no-controller              switch the Codex controller model off (Jev, when set up, still decides)   --controller-every <n>  consult after every n-th ok round
   --controller-mode <m>        auto (default): Jev first, the Codex model only when Jev is unsure; jev | shadow | luna (env LONGRUN_CONTROLLER_MODE)
+  --require-jev                refuse to start unless Jev is set up and the mode uses it (env LONGRUN_REQUIRE_JEV=1)
   --jev-confidence <0-1>       Jev answers alone above this (default 0.6); --jev-high-confidence <0-1> to kill a round or override the policy (0.85)
                                Jev needs a key: node scripts/longrun/jev-key.mjs set
   --sandbox <mode>             workspace-write | danger-full-access (default workspace-write)

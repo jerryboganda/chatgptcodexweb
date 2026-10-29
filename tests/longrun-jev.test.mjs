@@ -417,6 +417,78 @@ test("without a key Jev stays off and the Codex model decides alone", async () =
   }
 });
 
+test("Jev keeps deciding when the Codex model is switched off", async () => {
+  const sure = fakeJev(() => decideAnswers("continue", 0.95));
+  await scenario([IN_PROGRESS(1), { progress: "DONE" }], async ({ calls, controllerCalls, config, deps }) => {
+    const state = await runLongRun(config({ controllerMode: "auto", controller: false, jevClient: sure }), deps());
+    assert.equal(state.status, "done");
+    assert.equal(sure.calls.length, 1);
+    assert.equal(state.jevAccepted, 1);
+    assert.equal(controllerCalls().length, 0);
+    assert.equal(calls()[1].resume, true);
+  });
+});
+
+test("with the Codex model switched off, the policy decides what Jev is unsure about", async () => {
+  const unsure = fakeJev(() => decideAnswers("fresh", 0.5));
+  await scenario([IN_PROGRESS(1), { progress: "DONE" }], async ({ calls, controllerCalls, config, deps }) => {
+    const state = await runLongRun(config({ controllerMode: "auto", controller: false, jevClient: unsure }), deps());
+    assert.equal(state.status, "done");
+    assert.equal(unsure.calls.length, 1);
+    assert.equal(controllerCalls().length, 0);
+    assert.equal(calls()[1].resume, true, "the policy kept the chat");
+  });
+});
+
+test("Jev judges a running round with the Codex model switched off", async () => {
+  const jev = fakeJev((kind) => (kind === "watch" ? watchAnswers("fresh", 0.97) : kind === "decide" ? decideAnswers("fresh", 0.95) : classifyAnswers("other", 0.9)));
+  await scenario([{ type: "spin" }, { progress: "DONE" }], async ({ repo, calls, controllerCalls, config, deps }) => {
+    const state = await runLongRun(config({ controllerMode: "auto", controller: false, jevClient: jev, stallMs: 60_000, progressMs: 120_000, watchMs: 500 }), deps());
+    assert.equal(state.status, "done");
+    assert.equal(state.failuresByKind.stuck, 1);
+    assert.equal(calls()[1].resume, false);
+    assert.equal(controllerCalls().length, 0);
+    assert.match(events(repo), /Jev watch stands/);
+  });
+});
+
+test("the report and STATUS.json say whether Jev is deciding, so other sessions can check", async () => {
+  const jev = fakeJev(() => decideAnswers("continue", 0.95));
+  await scenario([IN_PROGRESS(1), { progress: "DONE" }], async ({ repo, config, deps }) => {
+    await runLongRun(config({ controllerMode: "auto", jevClient: jev }), deps());
+    const status = JSON.parse(readFileSync(path.join(repo, ".longrun", "STATUS.json"), "utf8"));
+    assert.deepEqual(status.jev, { active: true, mode: "auto", calls: 1, answeredAlone: 1, sentOn: 0, failures: 0, agreed: 0, disagreed: 0 });
+    assert.match(readFileSync(path.join(repo, ".longrun", "REPORT.md"), "utf8"), /- Jev: on \(auto\)/);
+  }, [luna({})]);
+});
+
+test("the report and STATUS.json also say when Jev is off and why", async () => {
+  await scenario([IN_PROGRESS(1), { progress: "DONE" }], async ({ repo, config, deps }) => {
+    await runLongRun(config({ controllerMode: "luna" }), deps());
+    const status = JSON.parse(readFileSync(path.join(repo, ".longrun", "STATUS.json"), "utf8"));
+    assert.equal(status.jev.active, false);
+    assert.equal(status.jev.off, "controller mode luna");
+    assert.match(readFileSync(path.join(repo, ".longrun", "REPORT.md"), "utf8"), /- Jev: OFF \(controller mode luna\)/);
+  }, [luna({})]);
+});
+
+test("--require-jev refuses to start without a usable Jev, instead of quietly running without it", async () => {
+  const saved = process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  const dir = mkdtempSync(path.join(os.tmpdir(), "jev-require-"));
+  try {
+    await scenario([{ progress: "DONE" }], async ({ config, deps }) => {
+      await assert.rejects(runLongRun(config({ controllerMode: "auto", requireJev: true, jevKeyFile: path.join(dir, "missing.json") }), deps()), /Jev is required.*not set up/);
+      await assert.rejects(runLongRun(config({ controllerMode: "luna", requireJev: true }), deps()), /Jev is required.*luna/);
+      const state = await runLongRun(config({ controllerMode: "auto", requireJev: true, jevClient: fakeJev(() => decideAnswers("continue", 0.95)) }), deps());
+      assert.equal(state.status, "done");
+    });
+  } finally {
+    if (saved !== undefined) process.env.TYPESAFE_API_KEY = saved;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("an unknown controller mode is refused up front", async () => {
   await scenario([{ progress: "DONE" }], async ({ config, deps }) => {
     await assert.rejects(runLongRun(config({ controllerMode: "turbo" }), deps()), /Unknown controller mode/);
