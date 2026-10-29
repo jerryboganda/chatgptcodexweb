@@ -23,6 +23,7 @@ const { BrowserHost, navigationErrorForLog } = require("./browser-host.cjs");
 const { SessionReminderView } = require("./session-reminder-view.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { LimitsController } = require("./limits-controller.cjs");
+const { createLiveStatus, defaultPaths: liveStatusPaths } = require("./live-status.cjs");
 const { SOURCE_URL: LIMITS_SOURCE_URL } = require("./limits-store.cjs");
 const { releaseRetainedConversation } = require("./retained-turn-release.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
@@ -110,6 +111,9 @@ let catalogVerificationTimer = null;
 let catalogVerificationInFlight = false;
 let updateController = null;
 let limitsController = null;
+let liveStatus = null;
+let liveStatusTimer = null;
+let liveStatusInFlight = false;
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -133,6 +137,25 @@ function send(channel, value) {
 function publishOperation(operation) {
   lastOperation = operation;
   send("launcher:operation", operation);
+}
+
+// Real probes, pushed every few seconds: nothing the sidebar shows as "working" comes from a saved flag.
+function startLiveStatus() {
+  if (!liveStatus || liveStatusTimer) return;
+  const tick = async () => {
+    if (liveStatusInFlight) return;
+    liveStatusInFlight = true;
+    try {
+      send("launcher:live-status", await liveStatus.collect());
+    } catch {
+      // The next tick probes again.
+    } finally {
+      liveStatusInFlight = false;
+    }
+  };
+  liveStatusTimer = setInterval(() => { void tick(); }, 3_000);
+  liveStatusTimer.unref?.();
+  void tick();
 }
 
 function stopCatalogVerificationMonitor() {
@@ -581,6 +604,7 @@ function registerIpc({ logger, stateStore }) {
     return handler(...args);
   });
   handle("launcher:limits", () => limitsController.snapshot());
+  handle("launcher:live-status", () => liveStatus ? liveStatus.collect() : null);
   handle("launcher:limits-setup", async () => {
     if (runtimeHost.currentOperation()) throw new Error("Finish the current launcher operation before checking Limits.");
     return limitsController.setup(() => browserHost.inspectLimitsPlan());
@@ -1244,6 +1268,20 @@ async function start() {
     && stateStore.read().browserInteractionMode !== configuredInteractionMode) {
     stateStore.update({ browserInteractionMode: configuredInteractionMode });
   }
+  // An install that already has a configured runtime is not a first run. If its saved launcher settings
+  // were lost, keep the user out of onboarding instead of asking them to set everything up again.
+  if (!IS_DEV_PROFILE && !stateStore.read().onboardingComplete && runtimeHost.runtimeConfigSnapshot().configured === true) {
+    stateStore.update({ onboardingComplete: true, githubOpened: true, xOpened: true });
+    logger.warn("launcher.onboarding_skipped_configured_runtime", {});
+  }
+  liveStatus = createLiveStatus({
+    readConfig: () => runtimeSupervisor.readConfig(),
+    fetchHealth: (config) => runtimeSupervisor.proxyHealthPayload(config, 2_000),
+    browserSnapshot: () => browserHost?.snapshot() ?? null,
+    getState: () => stateStore.read(),
+    releaseVersion: app.getVersion(),
+    ...liveStatusPaths({ codexHome: LAUNCHER_PROFILE.codexHome, coreHome: CORE_HOME }),
+  });
   browserHost = new BrowserHost({
     window: mainWindow,
     descriptorPath: BROWSER_DESCRIPTOR_PATH,
@@ -1288,6 +1326,7 @@ async function start() {
     });
   }
   await loadRenderer(mainWindow);
+  if (!launcherSmokeTest) startLiveStatus();
   if (!launcherSmokeTest) void updateController.checkOnce();
   if (launcherSmokeTest) {
     const smokeRuntimeRoot = runtimeRootProvider();

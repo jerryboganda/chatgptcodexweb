@@ -247,3 +247,34 @@ test("session refresh reminders are deferred by exactly 48 hours", () => {
   assert.equal(nextSessionRefreshReminderAt(now), "2026-08-07T12:00:00.000Z");
   assert.throws(() => nextSessionRefreshReminderAt(Number.NaN), /must be finite/);
 });
+
+test("a state file that cannot be read once restores the last good copy instead of defaults", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-state-backup-"));
+  const file = path.join(root, "state.json");
+  try {
+    const store = createStateStore(file);
+    store.update({ onboardingComplete: true, language: "en", mcpSetupComplete: true, browserSmokePassed: true, browserSmokeVersion: "6.1.14" });
+    store.update({ sidebarWidth: 300 });
+    for (const damage of ["", "{ not json", JSON.stringify({ version: 2 })]) {
+      fs.writeFileSync(file, damage);
+      const restored = createStateStore(file).read();
+      assert.equal(restored.onboardingComplete, true);
+      assert.equal(restored.mcpSetupComplete, true);
+      assert.equal(restored.browserSmokeVersion, "6.1.14");
+    }
+    fs.rmSync(file);
+    assert.equal(createStateStore(file).read().onboardingComplete, true);
+    // The next update writes the recovered settings back, not defaults.
+    createStateStore(file).update({ sidebarWidth: 280 });
+    assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).onboardingComplete, true);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a fresh install without any saved state still starts from defaults", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-state-fresh-"));
+  try {
+    const store = createStateStore(path.join(root, "state.json"));
+    assert.equal(store.read().onboardingComplete, false);
+    assert.equal(fs.existsSync(path.join(root, "state.json.bak")), false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

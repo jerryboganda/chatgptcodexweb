@@ -16,6 +16,8 @@ import { Icon, type IconName } from "./icons";
 import { LimitsSurface } from "./LimitsSurface";
 import { limitsCopyFor } from "./limits-copy";
 import { useLimits } from "./useLimits";
+import { useLiveStatus } from "./useLiveStatus";
+import { LiveStatusPanel } from "./LiveStatusPanel";
 import { describeTurnActivity } from "./turn-activity";
 import type {
   BrowserInteractionMode,
@@ -386,6 +388,8 @@ function LauncherShell({
   const selectedManualTab = browser?.tabs.find(tab => tab.active && tab.interactionMode === "manual");
   const approvalTabs = browser?.tabs.filter(tab => tab.status === "running" && tab.approvalPending) ?? [];
   const limits = useLimits(api!, snapshot.state.browserInteractionMode === "manual");
+  const live = useLiveStatus(api!);
+  const liveMcpDown = live.status?.items.some(item => item.id === "mcp" && item.tone === "error") === true;
   const limitsCopy = limitsCopyFor(language);
 
   useEffect(() => {
@@ -596,7 +600,7 @@ function LauncherShell({
                 />
                 <SidebarItem
                   active={surface === "mcp"}
-                  badge={mcpOptional ? <ActionDot tone="optional" /> : null}
+                  badge={liveMcpDown ? <ActionDot tone="error" /> : mcpOptional ? <ActionDot tone="optional" /> : null}
                   icon="mcp"
                   label="MCP"
                   onClick={() => {
@@ -622,6 +626,7 @@ function LauncherShell({
             </nav>
 
             <div className="sidebar-footer">
+              <LiveStatusPanel ageMs={live.ageMs} language={language} now={live.now} stale={live.stale} status={live.status} />
               {updateVisible ? (
                 <SidebarItem
                   active={false}

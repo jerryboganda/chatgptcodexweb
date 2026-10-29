@@ -137,8 +137,23 @@ export interface LauncherSnapshot {
   update: UpdateState;
 }
 
+export type LiveTone = "ok" | "busy" | "warn" | "error" | "off";
+
+export interface LiveStatusItem {
+  id: "bridge" | "chatgpt" | "route" | "mcp" | "longrun";
+  tone: LiveTone;
+  facts: Record<string, unknown>;
+}
+
+export interface LiveStatusSnapshot {
+  checkedAt: number;
+  items: LiveStatusItem[];
+}
+
 export interface LauncherApi {
   snapshot(): Promise<LauncherSnapshot>;
+  liveStatus(): Promise<LiveStatusSnapshot | null>;
+  onLiveStatus(listener: (status: LiveStatusSnapshot) => void): () => void;
   getLimits(): Promise<LimitsSnapshot>;
   setupLimits(): Promise<LimitsSnapshot>;
   setLanguage(language: Language): Promise<LauncherState>;

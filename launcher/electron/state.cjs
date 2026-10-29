@@ -35,10 +35,30 @@ function nextSessionRefreshReminderAt(now = Date.now()) {
   return new Date(now + SESSION_REFRESH_REMINDER_INTERVAL_MS).toISOString();
 }
 
+// The previous good file is kept next to the state so a read that fails once (a locked or half-written
+// file) cannot turn the user's saved settings into defaults that the next update then writes back.
+function backupPath(filePath) {
+  return `${filePath}.bak`;
+}
+
 function readState(filePath) {
+  for (const candidate of [filePath, backupPath(filePath)]) {
+    let text;
+    try {
+      text = fs.readFileSync(candidate, "utf8");
+    } catch {
+      continue;
+    }
+    const state = normalizeState(text);
+    if (state) return state;
+  }
+  return { ...DEFAULT_STATE };
+}
+
+function normalizeState(text) {
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, ""));
-    if (!parsed || parsed.version !== 1) return { ...DEFAULT_STATE };
+    const parsed = JSON.parse(text.replace(/^\uFEFF/, ""));
+    if (!parsed || parsed.version !== 1) return null;
     const state = { ...DEFAULT_STATE, ...parsed };
     delete state.bridgeEnabled;
     delete state.useSavedChats;
@@ -99,11 +119,14 @@ function readState(filePath) {
     }
     return state;
   } catch {
-    return { ...DEFAULT_STATE };
+    return null;
   }
 }
 
 function writeState(filePath, state) {
+  try {
+    if (normalizeState(fs.readFileSync(filePath, "utf8"))) fs.copyFileSync(filePath, backupPath(filePath));
+  } catch { /* nothing readable to keep */ }
   writePrivateFileAtomic(filePath, `${JSON.stringify(state, null, 2)}\n`);
 }
 

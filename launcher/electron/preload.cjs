@@ -9,6 +9,8 @@ function subscription(channel, listener) {
 contextBridge.exposeInMainWorld("codexWebLauncher", {
   snapshot: () => ipcRenderer.invoke("launcher:snapshot"),
   getLimits: () => ipcRenderer.invoke("launcher:limits"),
+  liveStatus: () => ipcRenderer.invoke("launcher:live-status"),
+  onLiveStatus: (listener) => subscription("launcher:live-status", listener),
   setupLimits: () => ipcRenderer.invoke("launcher:limits-setup"),
   setLanguage: (language) => ipcRenderer.invoke("launcher:set-language", language),
   openSocial: (target) => ipcRenderer.invoke("launcher:open-social", target),
