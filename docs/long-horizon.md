@@ -138,6 +138,20 @@ yours to tune; run a job in `shadow` first.
 - `--sandbox danger-full-access` lets the model run `git commit` itself on Windows; the default
   `workspace-write` cannot write `.git`, and the supervisor's checkpoint commits cover that.
 
+## Tested end to end
+
+Real runs through the bridge, each judged by a hidden acceptance script, with faults injected on purpose:
+
+| Worker effort | Task | Faults | Result |
+| --- | --- | --- | --- |
+| high | expression-language interpreter | codex killed at +7 min, supervisor killed at +16 min | 118/118 checks, 3 rounds |
+| extra high | ledger application in 6 phases | 3 codex kills, launcher closed, supervisor killed and restarted, ChatGPT "at capacity" for 45 min | 78/78 checks, 12 rounds, controller moved the job to a fresh chat at round 8 |
+| high | utility library, no controller | 3 codex kills in a row | 89/89 checks; fresh chat opened (`chat_keeps_failing`) and kept every standing rule |
+| medium | utility library, Jev on | 1 codex kill | 89/89 checks, 3 rounds |
+
+This shows the recovery paths work; it does not promise a literal 100% on every job. Jobs of 10 to 20 hours
+depend on the acceptance command and on ChatGPT staying available.
+
 ## Limits
 
 - It cannot make a model correct. The acceptance command is what decides "done", so give it real checks
