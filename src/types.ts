@@ -295,6 +295,12 @@ export interface CodexProviderConfig {
      * genuinely unresponsive upstream for longer. Defaults to DEFAULT_STALL_TIMEOUT_SEC.
      */
     stallTimeoutSec?: number;
+    /**
+     * Total milliseconds one stalled turn may wait out a ChatGPT "model is at capacity" or usage-limit
+     * notice (the bridge keeps the stream alive and retries in a new chat). Defaults to two hours;
+     * 0 disables the wait and reports the failure at once.
+     */
+    limitWaitBudgetMs?: number;
     /** Keep the single controlled browser visible. */
     headed?: boolean;
     /** Attach the turn-bound Codex MCP capability for every connector-capable Web model. */

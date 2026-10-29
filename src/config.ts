@@ -125,6 +125,12 @@ export interface AppConfig {
   zeroRiskProEnabled: boolean;
   /** Optional adapter-silence budget for the Responses watchdog. */
   stallTimeoutSec?: number;
+  /**
+   * Minutes one stalled turn may spend waiting out a ChatGPT capacity or usage-limit notice before the
+   * failure is reported. Defaults to 120; 0 reports such failures at once. Overridden by the
+   * CODEX_CHATGPT_WEB_LIMIT_WAIT_MINUTES environment variable.
+   */
+  limitWaitMinutes?: number;
   autoApproveToolCalls: boolean;
   controlToken: string;
   runtimeCommand: string[];
@@ -544,6 +550,10 @@ function parseConfig(value: unknown, path: string): AppConfig {
     && (!Number.isFinite(parsed.stallTimeoutSec) || parsed.stallTimeoutSec <= 0)) {
     throw new Error(`Invalid stallTimeoutSec in ${path}`);
   }
+  if (parsed.limitWaitMinutes !== undefined
+    && (typeof parsed.limitWaitMinutes !== "number" || !Number.isFinite(parsed.limitWaitMinutes) || parsed.limitWaitMinutes < 0)) {
+    throw new Error(`Invalid limitWaitMinutes in ${path}`);
+  }
   const solAvailable = parsed.solAvailable !== false;
   const proAvailable = parsed.proAvailable === true;
   if (parsed.experimentalSkillAttachments !== undefined && typeof parsed.experimentalSkillAttachments !== "boolean") {
@@ -644,6 +654,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       experimentalSkillAttachments: manual ? false : config.experimentalSkillAttachments,
       experimentalFreshConversationPerTurn: !manual && config.experimentalFreshConversationPerTurn === true,
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
+      ...(config.limitWaitMinutes !== undefined ? { limitWaitBudgetMs: Math.round(config.limitWaitMinutes * 60_000) } : {}),
       autoApproveToolCalls: manual ? false : config.autoApproveToolCalls,
     },
   };

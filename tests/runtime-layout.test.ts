@@ -193,6 +193,24 @@ test("existing v3 configurations deterministically retain automatic browser inte
   });
 });
 
+test("the limit-wait budget is a validated config setting that reaches the provider", () => {
+  const root = join(tmpdir(), `codex-chatgpt-web-limit-wait-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  mkdirSync(root, { recursive: true });
+  const config = defaultConfig("browser-only");
+  // Unset by default: the adapter then uses its two-hour default.
+  expect(providerConfig(config).chatgptWeb?.limitWaitBudgetMs).toBeUndefined();
+  for (const [minutes, budgetMs] of [[45, 45 * 60_000], [0, 0], [0.5, 30_000]] as const) {
+    writeFileSync(join(root, "config.json"), `${JSON.stringify({ ...config, limitWaitMinutes: minutes })}\n`);
+    expect(providerConfig(loadConfig()).chatgptWeb?.limitWaitBudgetMs).toBe(budgetMs);
+  }
+  for (const invalid of [-1, "soon", null, Number.NaN]) {
+    writeFileSync(join(root, "config.json"), `${JSON.stringify({ ...config, limitWaitMinutes: invalid })}\n`);
+    expect(() => loadConfig()).toThrow("Invalid limitWaitMinutes");
+  }
+});
+
 test("Zero Risk fails closed without the Launcher browser host", () => {
   const root = join(tmpdir(), `codex-chatgpt-web-manual-host-${process.pid}-${Date.now()}`);
   roots.push(root);
