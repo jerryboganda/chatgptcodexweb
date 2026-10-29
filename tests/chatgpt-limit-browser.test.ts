@@ -253,3 +253,22 @@ test.skipIf(!DOM_BROWSER)("in a real DOM only ChatGPT's own error notices are re
     }); });
   } finally { await browser.close(); }
 }, 90_000);
+
+test.skipIf(!DOM_BROWSER)("a status banner about a limit is read, an unrelated banner is not", async () => {
+  const { chromium } = await import("playwright-core");
+  const browser = await chromium.launch({ executablePath: DOM_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`
+      <aside role="status">New: try the latest model today</aside>
+      <aside role="status">A workspace member hit a limit Turn on auto-reload to automatically add credits and prevent future interruptions. Turn on auto-reload</aside>
+      <aside role="status" style="display:none">hidden banner: limit reached</aside>`);
+    const texts = await page.locator("html").evaluate(chatGptLimitNoticeTexts, undefined, { timeout: 30_000 });
+    expect(texts).toEqual([expect.stringContaining("hit a limit")]);
+    await eventually(async () => {
+      await expect(throwIfChatGptLimitNotice(page, Date.now() + 1_000_000)).rejects.toMatchObject({ code: CHATGPT_USAGE_LIMIT_CODE });
+    });
+  } finally {
+    await browser.close();
+  }
+}, 120_000);

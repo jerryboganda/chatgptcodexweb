@@ -333,3 +333,10 @@ function retryable(): ChatGptWebAdapterError {
     status: 502, errorType: "server_error", code: "upstream_server_error", retryable: true,
   });
 }
+
+test("a workspace limit banner counts as a usage limit, and a mere warning does not", () => {
+  expect(classifyChatGptLimitText(
+    "A workspace member hit a limit Turn on auto-reload to automatically add credits and prevent future interruptions. Turn on auto-reload",
+  )).toEqual({ kind: "usage_limit" });
+  expect(classifyChatGptLimitText("You are approaching your limit. Turn on auto-reload")).toBeUndefined();
+});
