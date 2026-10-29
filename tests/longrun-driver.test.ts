@@ -21,6 +21,8 @@ test("the instructions name the worker model and effort and only ask something o
   expect(text).toContain("`chatgpt-web/gpt-6-sol`");
   expect(text).toContain("at `high` effort");
   expect(text).toContain("only if you are a Luna model");
+  expect(text).not.toContain("plain question or explanation that changes no files");
+  expect(text).toContain("analysis, architecture explanation, code review or investigation");
   expect(text).toContain("any other model, or a subagent, ignore this section");
   expect(driverInstructions({ ...SETTINGS, workerEffort: "xhigh" })).toContain("at `xhigh` effort");
 });

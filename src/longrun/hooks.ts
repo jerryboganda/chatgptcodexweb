@@ -40,12 +40,16 @@ export type HookOutput =
  * Added to every request a person sends to a Luna driver. Codex only starts agents on an explicit request and the
  * AGENTS.md block alone proved too easy to skip, so the standing request is restated with each message.
  */
-export const DRIVER_CONTEXT = [
-  `${LONGRUN_MARK} The user has switched on "Luna drives, Sol works" in their codex-chatgpt-web settings. That is their standing request for this task:`,
-  "do not write or change code yourself. Follow the section \"Luna drives, Sol works\" of your instructions (~/.codex/AGENTS.md):",
-  "create .longrun/PROGRESS.md, write the job to .longrun/brief.md, run the worker command given there, then read the diff and run the acceptance command yourself.",
-  "This applies even when the task looks small.",
-].join(" ");
+export function driverContext(model: string, workerModel: string, workerEffort: string): string {
+  return [
+    `${LONGRUN_MARK} Your session model is ${model}: you ARE the Luna driver, so "Luna drives, Sol works" applies to you. Do not doubt this.`,
+    "The user switched it on in their codex-chatgpt-web settings and wants every coding, analysis, architecture, review and investigation job done by the ChatGPT web worker",
+    `(${workerModel} at ${workerEffort} effort), not by you. Only a short chat reply may stay with you.`,
+    "Follow the section \"Luna drives, Sol works\" of your instructions (~/.codex/AGENTS.md): create .longrun/PROGRESS.md, write the job to .longrun/brief.md,",
+    "run the worker command given there, then read the result and, for code, run the acceptance command yourself.",
+    "This applies even when the task looks small or is only a question about the project.",
+  ].join(" ");
+}
 
 export interface HookDeps {
   home: string;
@@ -157,7 +161,7 @@ export function handlePrompt(input: PromptHookInput, deps: HookDeps): HookOutput
   pruneStates(deps.home, deps.now());
   deps.log("task_started", { session: sessionId });
   if (isDriver(input.model, settings)) {
-    return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: DRIVER_CONTEXT } };
+    return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: driverContext(text(input.model), settings.workerModel, settings.workerEffort) } };
   }
   return undefined;
 }

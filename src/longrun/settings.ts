@@ -42,7 +42,7 @@ export const DEFAULT_LONGRUN_SETTINGS: LongrunSettings = Object.freeze({
   driver: true,
   driverModelPrefixes: ["gpt-6-luna", "gpt-5.6-luna"],
   workerModel: "chatgpt-web/gpt-6-sol",
-  workerEffort: "high" as WorkerEffort,
+  workerEffort: "xhigh" as WorkerEffort,
   workerSandbox: "workspace-write" as WorkerSandbox,
   maxContinuations: 40,
   maxHours: 20,

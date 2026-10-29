@@ -453,9 +453,9 @@ test("Luna is left alone when the driver setting is off", async () => {
 
 test("worker settings are validated so only a ChatGPT web model and a known effort are accepted", () => {
   expect(normalizeSettings({}).workerModel).toBe("chatgpt-web/gpt-6-sol");
-  expect(normalizeSettings({}).workerEffort).toBe("high");
+  expect(normalizeSettings({}).workerEffort).toBe("xhigh");
   expect(normalizeSettings({ workerEffort: "xhigh", workerModel: "chatgpt-web/gpt-6-pro" })).toMatchObject({ workerEffort: "xhigh", workerModel: "chatgpt-web/gpt-6-pro" });
-  expect(normalizeSettings({ workerEffort: "instant", workerModel: "gpt-6-luna" })).toMatchObject({ workerEffort: "high", workerModel: "chatgpt-web/gpt-6-sol" });
+  expect(normalizeSettings({ workerEffort: "instant", workerModel: "gpt-6-luna" })).toMatchObject({ workerEffort: "xhigh", workerModel: "chatgpt-web/gpt-6-sol" });
   expect(normalizeSettings({ workerModel: "chatgpt-web/x y; rm" }).workerModel).toBe("chatgpt-web/gpt-6-sol");
   expect(normalizeSettings({ driverModelPrefixes: [] }).driverModelPrefixes).toEqual(["gpt-6-luna", "gpt-5.6-luna"]);
 });
@@ -467,6 +467,9 @@ test("each request to a Luna driver carries the standing request to use the work
   const context = (output as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
   expect(context).toContain("Luna drives, Sol works");
   expect(context).toContain(".longrun/brief.md");
+  expect(context).toContain("Your session model is gpt-6-luna");
+  expect(context).toContain("analysis, architecture, review and investigation");
+  expect(context).toContain("chatgpt-web/gpt-6-sol at xhigh effort");
   expect(context.startsWith(LONGRUN_MARK)).toBe(true);
   expect(handlePrompt(prompt("Build a CLI"), fakeDeps().deps)).toBeUndefined();
   expect(handlePrompt(prompt(`${LONGRUN_MARK} The acceptance check failed`, { model: "gpt-6-luna" }), fakeDeps().deps)).toBeUndefined();

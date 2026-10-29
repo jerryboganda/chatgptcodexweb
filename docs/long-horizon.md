@@ -70,7 +70,7 @@ the acceptance command passes. If that chat breaks, up to three fresh chats are 
 built-in subagent tool is not used: it only starts agents when the user asks for them by name, so it cannot be relied on.
 
 ```bash
-codex-chatgpt-web longrun worker xhigh     # worker effort: medium, high or xhigh (default high)
+codex-chatgpt-web longrun worker xhigh     # worker effort: medium, high or xhigh (default xhigh)
 codex-chatgpt-web longrun driver off       # Luna works alone again; `driver on` switches it back
 codex-chatgpt-web longrun status           # shows the driver, the worker and whether the block is installed
 ```
