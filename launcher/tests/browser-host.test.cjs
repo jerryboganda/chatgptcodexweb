@@ -610,6 +610,7 @@ test("session inspection delegates navigation and capability detection to the sh
     helper: { executable: "/runtime/electron", script: "/runtime/browser-helper.cjs" },
     descriptorPath: "/runtime/launcher-browser.json",
     getConnectorName: () => "Codex Native2",
+    getUseTemporaryChats: () => false,
     logger: { info() {} },
     view: { webContents: { getURL: () => "https://chatgpt.com/" } },
     refreshChatGptHomeDocument: async () => calls.push({ operation: "refresh" }),
@@ -641,6 +642,7 @@ test("session inspection delegates navigation and capability detection to the sh
   assert.equal(calls[0].operation, "refresh");
   assert.equal(calls[1].operation, "inspect");
   assert.equal(calls[1].appName, "Codex Native2");
+  assert.equal(calls[1].useTemporaryChats, false, "account inspection keeps its ordinary sign-in surface");
   assert.deepEqual(calls[1].payload, { detectCapabilities: true });
 });
 
@@ -2070,6 +2072,7 @@ test("launcher delegates every ChatGPT model and turn operation to the shared br
     helper: { executable: "/runtime/electron", script: "/runtime/browser-helper.cjs" },
     descriptorPath: "/runtime/launcher-browser.json",
     getConnectorName: () => "Codex Native2",
+    getUseTemporaryChats: () => false,
     logger: { info: (...args) => calls.push(["log", ...args]) },
     show: () => calls.push(["show"]),
     waitForSurfaceReady: async () => calls.push(["ready"]),
@@ -2104,7 +2107,7 @@ test("browser helper operations fail closed when the configured connector name i
   assert.equal(helperCalls, 0);
 });
 
-test("hidden connector verification uses an ordinary chat without selecting effort", async () => {
+for (const useTemporaryChats of [false, true]) test(`hidden connector verification follows the selected chat mode (${useTemporaryChats}) without selecting effort`, async () => {
   const calls = [];
   const fixture = {
     helper: { executable: "/runtime/electron", script: "/runtime/browser-helper.cjs" },
@@ -2112,7 +2115,8 @@ test("hidden connector verification uses an ordinary chat without selecting effo
     logger: { info: (event, detail) => calls.push(["log", event, detail]) },
     setState: (patch) => calls.push(["state", patch]),
     show: () => calls.push(["show"]),
-    refreshChatGptHomeDocument: async () => calls.push(["refresh"]),
+    refreshChatGptHomeDocument: async temporary => calls.push(["refresh", temporary]),
+    getUseTemporaryChats: () => useTemporaryChats,
     selectHighEffort: async () => {
       throw new Error("connector verification must not select an effort");
     },
@@ -2129,20 +2133,21 @@ test("hidden connector verification uses an ordinary chat without selecting effo
   assert.deepEqual(
     calls.filter(([type]) => ["refresh", "helper"].includes(type)),
     [
-      ["refresh"],
+      ["refresh", useTemporaryChats],
       ["helper", {
         helper: fixture.helper,
         descriptorPath: fixture.descriptorPath,
         appName: "Codex Native2",
+        useTemporaryChats,
         logger: fixture.logger,
       }],
     ],
   );
 });
 
-test("verification refresh and authentication always use an ordinary new chat", async () => {
-  const target = "https://chatgpt.com/";
-  for (const initial of [target, "https://chatgpt.com/c/existing", "about:blank",
+for (const useTemporaryChats of [false, true]) test(`verification refresh authenticates the selected new chat (${useTemporaryChats})`, async () => {
+  const target = useTemporaryChats ? "https://chatgpt.com/?temporary-chat=true" : "https://chatgpt.com/";
+  for (const initial of ["https://chatgpt.com/", "https://chatgpt.com/c/existing", "about:blank",
     "https://chatgpt.com/?temporary-chat=true"]) {
     const calls = [];
     let currentUrl = initial;
@@ -2162,7 +2167,7 @@ test("verification refresh and authentication always use an ordinary new chat", 
       } },
       hardRefreshHome: async () => calls.push(["refresh"]),
     });
-    await fixture.refreshChatGptHomeDocument();
+    await fixture.refreshChatGptHomeDocument(useTemporaryChats);
     assert.deepEqual(calls, [initial === target ? ["refresh"] : ["navigate", target], ["authenticate"]]);
     assert.equal(fixture.state.authenticated, true);
     assert.equal(currentUrl, target);
@@ -2183,6 +2188,7 @@ test("connector verification records the helper failure in launcher diagnostics"
     },
     setState: (patch) => calls.push(["state", patch]),
     refreshChatGptHomeDocument: async () => calls.push(["refresh"]),
+    getUseTemporaryChats: () => false,
     getUseSavedChats: () => true,
     verifyConnectorWithBrowserHelper: async () => { throw failure; },
   };
@@ -4195,13 +4201,13 @@ test("off-on-off fresh conversation changes retire completed history before it c
     const property = "experimentalFreshConversationPerTurn";
     const method = "setFreshConversationPerTurn";
     const channel = "launcher:fresh-conversation-per-turn";
-    const nextChannel = "launcher:auto-approve-tool-calls";
+    const nextChannel = "launcher:temporary-chats";
     const key = "a".repeat(64);
     const stale = { id: "old-chat", traceId: "old-turn", status: "ready", interactionMode: "automatic",
       conversationKey: key, connectorIdentity: "Codex Native2", connectorBound: true };
     const manual = { id: "manual-chat", status: "ready", interactionMode: "manual", conversationKey: "b".repeat(64) };
-    const state = { experimentalFreshConversationPerTurn: false };
-    const config = { experimentalFreshConversationPerTurn: false };
+    const state = { experimentalFreshConversationPerTurn: false, useTemporaryChats: false };
+    const config = { experimentalFreshConversationPerTurn: false, useTemporaryChats: false };
     let handler, failSetup = true, commit;
     const removed = [];
     const fixture = Object.assign(Object.create(BrowserHost.prototype), {

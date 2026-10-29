@@ -107,12 +107,15 @@ function validateStoredEnvironment(value: unknown): StoredThreadEnvironment {
   const writableRoots = Array.isArray(parsed.writableRoots) && parsed.writableRoots.length === 0
     ? []
     : absolutePaths(parsed.writableRoots, "writable roots");
-  if (!roots.some(root => contains(root, cwd))) throw new Error("Persisted ChatGPT cwd is outside its roots");
+  const policy = sandboxPolicy(parsed.sandboxPolicy, roots, writableRoots);
+  if (!roots.some(root => contains(root, cwd)) && policy.type !== "dangerFullAccess") {
+    throw new Error("Persisted ChatGPT cwd is outside its roots");
+  }
   return {
     cwd,
     roots,
     writableRoots,
-    sandboxPolicy: sandboxPolicy(parsed.sandboxPolicy, roots, writableRoots),
+    sandboxPolicy: policy,
     updatedAt: parsed.updatedAt,
   };
 }
@@ -134,7 +137,7 @@ function conflictingAuthorityFields(claim: ChatGptEnvironmentClaim, right: ChatG
   const nativeGrants = new Set([...right.roots, ...right.writableRoots].map(pathIdentity));
   const fields: string[] = [];
   if ((left.cwd !== undefined && pathIdentity(left.cwd) !== pathIdentity(right.cwd))
-    || !left.roots.some(root => contains(root, right.cwd))) fields.push("cwd");
+    || (right.sandboxPolicy.type !== "dangerFullAccess" && !left.roots.some(root => contains(root, right.cwd)))) fields.push("cwd");
   // Codex 0.163 omits workspace_roots in some rollouts while its envelope still
   // lists output directories. Every extra claimed root must be an exact native
   // grant, and no native workspace may disappear. Return only native authority.
@@ -180,15 +183,20 @@ export class ChatGptThreadEnvironmentStore {
     try {
       const claim = extractChatGptTurnEnvironmentClaim(parsed);
       const environment = claim.environment;
-      if (environment.cwd === undefined || this.codexHomes.length > 1
+      const outsideProjectRoots = environment.cwd !== undefined
+        && !environment.roots.some(root => contains(root, environment.cwd!));
+      if (environment.cwd === undefined || outsideProjectRoots || this.codexHomes.length > 1
         || (environment.sandboxPolicy.type !== "dangerFullAccess" && !claim.statesNetworkAccess)) {
         // A shared bridge must prove the current native owner even for complete envelopes.
         // Modern envelopes state filesystem access only. Resolve the current native policy on
         // the first round too: absence of a network statement is not a disabled-network grant.
         // Likewise, workspace roots do not identify cwd; only this turn's native record can.
+        // Full Access can place a worktree outside those project roots. Authenticate
+        // both the explicit cwd and retained project roots before accepting that shape.
         initialClaim = claim;
         throw new MissingTrustedCodexEnvironmentError(
           environment.cwd === undefined ? "cwd"
+            : outsideProjectRoots ? "current native worktree authority"
             : this.codexHomes.length > 1 ? "current native task ownership" : "network access",
         );
       }

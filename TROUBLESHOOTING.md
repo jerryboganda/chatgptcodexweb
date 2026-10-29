@@ -193,7 +193,7 @@ control, composer, send button, new chat, or an operational viewport usually
 mean that the ChatGPT UI did not expose a structure the bridge can safely prove.
 
 1. Update to the latest release.
-2. Confirm that a new ordinary chat can be opened in the launcher and that the account is not
+2. Confirm that a new chat in the selected mode can be opened in the launcher and that the account is not
    showing a login, onboarding, capacity, or rate-limit dialog.
 3. Run the smoke test one more time with the launcher visible.
 4. If the same structural error remains, do not keep retrying. Export a safe log and open a focused
@@ -205,12 +205,29 @@ Luna and Think use rolling summaries with **Settings → Bigger Context** off. E
 Context keeps the task conversation and sends large histories in parts. If earlier details
 are lost in long Free-account chats, turn Bigger Context off and restart Codex.
 
+## A single message is too large for Bigger Context
+
+`No ChatGPT effort available to this account can carry a Bigger Context stage` is a local
+preflight rejection, before that message is sent to ChatGPT. Bigger Context distributes complete
+messages and tool results across stages; it does not split an individual message or JSON record.
+Increasing the advertised context window or the compaction threshold does not enlarge a stage.
+
+Keep the context limits supplied by the launcher. Split large inputs into smaller messages before
+submission, or put source material in files and ask Codex to read the relevant sections. Keep
+individual tool results bounded too. If an oversized record is already in the task history,
+compact the task or start a fresh task with smaller inputs.
+
+If this still fails on an unmodified release with the default limits, open a new issue with
+**Activity → Export safe log**, the failure time, account tier, model and effort. Distinguish the
+local preflight error from a message-size error shown by ChatGPT after submission.
+
 ## Personalization or connector controls are not found
 
-Current builds always use ordinary ChatGPT chats, including connector verification. If an older
-build fails in Temporary Chat, update, finish active tasks, and restart the launcher and Codex.
-The old chat-mode setting is no longer used. Task conversations remain in ChatGPT history;
-ChatGPT memory and custom instructions may apply.
+**Settings → Temporary Chat** is on by default. If your connector is
+missing there, finish active tasks, turn that setting off, and retry. Connector availability can
+differ between accounts and chat modes. The launcher does not silently change modes. The retired
+saved-chat setting does not override the current preference. ChatGPT memory and custom instructions may
+apply in either mode.
 
 In ChatGPT, open **Settings → General → Language** and choose **English** explicitly, then reload
 ChatGPT inside the launcher and retry once. Some browser controls depend on English labels;
@@ -402,6 +419,19 @@ environment may still need to be restarted.
 If the error remains or reports invalid workspace/permission records, export **Activity → Export
 safe log** and include the exact error. Keep the preserved file private; do not delete your launcher
 settings or upload the saved task environments.
+
+## A custom compaction limit causes `context_window_exceeded`
+
+Run **Settings → Run doctor**. A global or default-profile `model_auto_compact_token_limit` overrides
+the model's advertised threshold. A value chosen for a native model may exceed a Web model's
+limit. Remove that override to use per-model defaults, then restart Codex. Also check any
+`model_context_window` override; a context window smaller than the compaction threshold can fail
+before compaction starts. Doctor reports conflicting saved settings without editing them.
+
+Doctor cannot inspect command-line or project-specific overrides. If the error remains, include
+the selected model, launcher/Codex versions, these two settings and the failure time with your safe
+log. Do not post your entire configuration or credentials. An error message alone does not prove
+that these settings caused the failure.
 
 ## Native compaction returns `404 Not Found`
 

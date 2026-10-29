@@ -317,5 +317,7 @@ export interface CodexProviderConfig {
     experimentalSkillAttachments?: boolean;
     /** Explicitly rebuild each automatic turn in a fresh browser conversation. */
     experimentalFreshConversationPerTurn?: boolean;
+    /** Explicit opt-in; ordinary chats remain the default. */
+    useTemporaryChats?: boolean;
   };
 }

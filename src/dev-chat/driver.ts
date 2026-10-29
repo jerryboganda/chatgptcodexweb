@@ -399,6 +399,7 @@ export function createLauncherDevAdapter(
       turnTimeoutMs: 60 * 60_000,
       experimentalSkillAttachments: config.experimentalSkillAttachments,
       experimentalFreshConversationPerTurn: config.experimentalFreshConversationPerTurn,
+      useTemporaryChats: config.useTemporaryChats,
       ...(config.experimentalBiggerContext
         ? { experimentalBiggerContext: true }
         : {}),

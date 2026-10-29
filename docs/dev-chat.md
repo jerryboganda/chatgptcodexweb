@@ -55,7 +55,8 @@ new turn-bound MCP token, and all MCP tool rounds for that message remain inside
 response. On an exact native compaction request, the same Web agent submits the checkpoint through
 a one-shot MCP control call in that chat; only then does the surface close and the next epoch open a
 new chat. The complete named history remains owned by the existing prompt compiler. New
-chats follow the configured **Save chats in ChatGPT** setting (on by default) and use the cheapest
+chats follow **Settings → Temporary Chat** (on by default). Ordinary chats remain in ChatGPT history;
+`dev setup --temporary-chats` and `--ordinary-chats` explicitly select the mode. Chats use the cheapest
 account-supported browser mode:
 Instant (`light`) when Sol is available, otherwise Luna. Override it with `--model` or `/model`.
 

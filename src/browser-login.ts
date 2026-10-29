@@ -8,9 +8,9 @@ import {
   assertAuthenticatedChatGptPage,
   assertNewChatPage,
   CHATGPT_NEW_CHAT_URL,
-  CHATGPT_COMPOSER_SELECTOR,
   detectChatGptAccountCapabilities,
 } from "./chatgpt-session";
+import { CHATGPT_COMPOSER_SELECTOR } from "./chatgpt-ui/composer";
 import type { ChatGptWebAccountCapabilities } from "./chatgpt-web-models";
 
 export interface BrowserLoginResult {

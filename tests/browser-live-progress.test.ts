@@ -4,7 +4,7 @@ import { chromium } from "playwright-core";
 import { chatGptResponseStructureLogEntries, chatGptResponseStructures } from "../src/adapters/chatgpt-web/browser-response-structure";
 import { chatGptInteractionState } from "../src/adapters/chatgpt-web/browser-interaction-state";
 import { ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptCompletionTracker, ChatGptSubmissionRejectionObserver, ChatGptTurnDomHealthTracker, throwIfChatGptTerminalErrorAlert } from "../src/adapters/chatgpt-web/browser-worker";
-import { chatGptAssistantTurnSelector, chatGptTurnContainerSelector } from "../src/chatgpt-session";
+import { chatGptAssistantTurnSelector, chatGptTurnContainerSelector } from "../src/chatgpt-ui/turns";
 import { ChatGptExternalTurnProgress } from "../src/adapters/chatgpt-web/turn-progress";
 
 test("the largest response diagnostics survive the launcher's safe-log string limit intact", () => {

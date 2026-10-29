@@ -1275,6 +1275,32 @@ class RuntimeHost {
     return { ...result, enabled };
   }
 
+  async setTemporaryChats(enabled) {
+    if (typeof enabled !== "boolean") throw new Error("Temporary Chat preference must be a boolean");
+    const current = this.runtimeConfigSnapshot();
+    if (!current.configured) throw new Error("Initialize the runtime before changing Temporary Chat");
+    const development = this.launcherProfile === "development";
+    const args = [
+      ...(development ? ["dev", "setup"] : ["setup"]),
+      current.mode === "full" ? "--full" : "--browser-only",
+      "--browser-host-descriptor", this.browserDescriptorPath,
+      ...this.browserInteractionArgs(),
+      "--acknowledge-unofficial",
+      ...(development ? [] : ["--replace-codex-route", "--restart-service"]),
+      enabled ? "--temporary-chats" : "--ordinary-chats",
+    ];
+    if (!development && current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
+    const options = {
+      message: enabled ? "Enabling Temporary Chat" : "Restoring ordinary chats",
+      successMessage: enabled ? "Temporary Chat enabled" : "Ordinary chats restored",
+      timeoutMs: CORE_SETUP_TIMEOUT_MS,
+    };
+    const result = development
+      ? await this.runDevSetup("temporary-chats", args, options)
+      : await this.runSetup("temporary-chats", args, options);
+    return { ...result, enabled };
+  }
+
   async setZeroRiskPro(enabled) {
     const current = this.runtimeConfigSnapshot();
     if (!current.configured) {

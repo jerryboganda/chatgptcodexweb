@@ -22,6 +22,7 @@ export interface LauncherState {
   composerPredictionsEnabled: boolean;
   experimentalSkillAttachments: boolean;
   experimentalFreshConversationPerTurn: boolean;
+  useTemporaryChats: boolean;
   zeroRiskProEnabled: boolean;
   sidebarOpen: boolean;
   sidebarWidth: number;
@@ -159,6 +160,8 @@ export interface LauncherApi {
   continuePasskeyLogin(): Promise<boolean>;
   logoutChatGpt(): Promise<{ browser: BrowserState; state: LauncherState }>;
   dismissSessionReminder(): Promise<LauncherState>;
+  setSessionReminderVisible(visible: boolean): Promise<void>;
+  onSessionReminderLogout(listener: () => void): () => void;
   smokeTest(): Promise<{ ok: boolean; effort: string; response: string }>;
   verifyMcp(): Promise<DoctorReport>;
   doctor(): Promise<DoctorReport>;
@@ -179,6 +182,7 @@ export interface LauncherApi {
   setSkillAttachments(enabled: boolean): Promise<LauncherState>;
   setAutoApproveToolCalls(enabled: boolean): Promise<LauncherState>;
   setFreshConversationPerTurn(enabled: boolean): Promise<LauncherState>;
+  setTemporaryChats(enabled: boolean): Promise<LauncherState>;
   setZeroRiskPro(enabled: boolean): Promise<LauncherState>;
   setBrowserInteractionMode(mode: BrowserInteractionMode): Promise<{
     state: LauncherState;
@@ -207,5 +211,11 @@ export interface LauncherApi {
 declare global {
   interface Window {
     codexWebLauncher?: LauncherApi;
+    codexSessionReminder?: {
+      language(): Promise<Language>;
+      resize(height: number): Promise<void>;
+      action(action: "dismiss" | "logout"): Promise<void>;
+      onLanguage(listener: (language: Language) => void): () => void;
+    };
   }
 }
