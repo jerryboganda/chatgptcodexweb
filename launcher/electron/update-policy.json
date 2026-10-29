@@ -1,0 +1,4 @@
+{
+  "offerUpstreamReleases": false,
+  "note": "This build is made from jerryboganda/chatgptcodexweb. The in-app updater only knows the upstream release feed (miuuyy/codex-chatgpt-web), and installing one of those would replace this build with one that lacks its changes. Set offerUpstreamReleases to true only for a build that is meant to follow upstream releases."
+}

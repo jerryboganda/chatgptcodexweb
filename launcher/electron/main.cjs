@@ -39,6 +39,7 @@ const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
 const { DEVELOPMENT_PROFILE, resolveLauncherProfile } = require("./profile.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
 const { createUpdateController } = require("./update.cjs");
+const updatePolicy = require("./update-policy.json");
 const {
   createStateStore,
   nextSessionRefreshReminderAt,
@@ -1305,7 +1306,8 @@ async function start() {
     currentVersion: app.getVersion(),
     platform: process.platform,
     arch: process.arch,
-    packaged: app.isPackaged && !IS_DEV_PROFILE,
+    // A disabled controller never checks, never shows the sidebar button and never installs anything.
+    packaged: app.isPackaged && !IS_DEV_PROFILE && updatePolicy.offerUpstreamReleases === true,
     executablePath: process.execPath,
     runtimeExecutable: updaterRuntimeRoot
       ? runtimeBundlePaths(updaterRuntimeRoot, process.platform).executable
