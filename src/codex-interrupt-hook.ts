@@ -11,7 +11,7 @@ export const MANAGED_INTERRUPT_HOOK_START =
 export const MANAGED_INTERRUPT_HOOK_END =
   "# End codex-chatgpt-web interrupt lifecycle hook.";
 
-function canonicalJson(value: unknown): unknown {
+export function canonicalJson(value: unknown): unknown {
   if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) return value.map(canonicalJson);
   if (!value || typeof value !== "object") return value;
@@ -59,7 +59,7 @@ export function codexInterruptHookCommand(
   return args.map(platform === "win32" ? cmdShellArgument : posixShellArgument).join(" ");
 }
 
-function lineEnding(text: string): "\n" | "\r\n" | "\r" {
+export function lineEnding(text: string): "\n" | "\r\n" | "\r" {
   return text.includes("\r\n") ? "\r\n" : text.includes("\n") ? "\n" : text.includes("\r") ? "\r" : "\n";
 }
 
@@ -67,7 +67,7 @@ function managedMarkerCount(text: string): number {
   return text.split(MANAGED_INTERRUPT_HOOK_START).length - 1;
 }
 
-function canonicalConfigPath(configPath: string): string {
+export function canonicalConfigPath(configPath: string): string {
   const absolute = resolve(configPath);
   try {
     return realpathSync.native(absolute);

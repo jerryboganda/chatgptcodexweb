@@ -1,0 +1,372 @@
+import { afterEach, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { runAcceptance, tailOf, failureSignature } from "../src/longrun/acceptance";
+import { workTreeFingerprint } from "../src/longrun/fingerprint";
+import { LONGRUN_MARK, endsWithQuestion, handlePrompt, handleStop, type HookDeps } from "../src/longrun/hooks";
+import { parseAcceptanceLine, resolveProject } from "../src/longrun/project";
+import { DEFAULT_LONGRUN_SETTINGS, loadLongrunSettings, normalizeSettings, saveLongrunSettings } from "../src/longrun/settings";
+import { loadState, saveState, freshState } from "../src/longrun/state";
+
+const cleanup: string[] = [];
+afterEach(() => { for (const path of cleanup.splice(0)) rmSync(path, { recursive: true, force: true }); });
+
+function temp(prefix = "longrun-"): string {
+  const path = mkdtempSync(join(tmpdir(), prefix));
+  cleanup.push(path);
+  return path;
+}
+
+const SESSION = "01a18539-e4df-7061-8f32-2c0fcf5881de";
+
+function fakeDeps(over: Partial<HookDeps> & { fingerprints?: string[]; results?: Array<{ ok: boolean; tail?: string; signature?: string; exitCode?: number | null }> } = {}) {
+  const home = over.home ?? temp("longrun-home-");
+  const fingerprints = over.fingerprints ?? [];
+  const results = over.results ?? [];
+  let clock = 1_000_000;
+  const calls = { acceptance: 0, log: [] as string[] };
+  const deps: HookDeps = {
+    home,
+    now: () => (clock += 1000),
+    settings: () => normalizeSettings({}),
+    project: () => ({ enabled: true, root: "C:/p", acceptance: { command: "npm test", source: "package.json" } }),
+    fingerprint: () => fingerprints.shift() ?? "fp-same",
+    acceptance: async () => {
+      calls.acceptance += 1;
+      const next = results.shift() ?? { ok: true };
+      return { ok: next.ok, exitCode: next.exitCode ?? (next.ok ? 0 : 1), timedOut: false, tail: next.tail ?? "", durationMs: 5, signature: next.signature ?? `sig${calls.acceptance}` };
+    },
+    log: (event) => calls.log.push(event),
+    ...over,
+  };
+  return { deps, calls, home };
+}
+
+const stop = (extra: Record<string, unknown> = {}) => ({ session_id: SESSION, cwd: "C:/p", model: "chatgpt-web/gpt-6-sol", last_assistant_message: "Done.", ...extra });
+const prompt = (text: string, extra: Record<string, unknown> = {}) => ({ session_id: SESSION, cwd: "C:/p", model: "chatgpt-web/gpt-6-sol", prompt: text, ...extra });
+
+// ---- settings
+
+test("settings are clamped so a bad file cannot make the loop unbounded", () => {
+  const settings = normalizeSettings({ maxContinuations: 1e9, maxHours: -4, sameFailureLimit: "x", acceptanceTimeoutMinutes: 9999, modelPrefixes: [] });
+  expect(settings.maxContinuations).toBe(500);
+  expect(settings.maxHours).toBe(0.25);
+  expect(settings.sameFailureLimit).toBe(DEFAULT_LONGRUN_SETTINGS.sameFailureLimit);
+  expect(settings.acceptanceTimeoutMinutes).toBe(240);
+  expect(settings.modelPrefixes).toEqual(["chatgpt-web/"]);
+  expect(normalizeSettings("garbage").enabled).toBe(true);
+});
+
+test("settings load from the home folder, can be saved, and an environment switch turns the feature off", () => {
+  const home = temp();
+  expect(loadLongrunSettings(home, {}).enabled).toBe(true);
+  saveLongrunSettings({ enabled: false, maxContinuations: 7 }, home);
+  const saved = loadLongrunSettings(home, {});
+  expect(saved.enabled).toBe(false);
+  expect(saved.maxContinuations).toBe(7);
+  saveLongrunSettings({ enabled: true }, home);
+  expect(loadLongrunSettings(home, {}).maxContinuations).toBe(7);
+  expect(loadLongrunSettings(home, { CODEX_LONGRUN: "off" }).enabled).toBe(false);
+  writeFileSync(join(home, "longrun.json"), "{ not json");
+  expect(loadLongrunSettings(home, {}).enabled).toBe(true);
+});
+
+// ---- project detection
+
+test("an acceptance line in AGENTS.md is understood in common spellings", () => {
+  expect(parseAcceptanceLine("# Rules\nacceptance: npm test\n")).toBe("npm test");
+  expect(parseAcceptanceLine("- Acceptance command: `pytest -q`")).toBe("pytest -q");
+  expect(parseAcceptanceLine("* **Acceptance check**: cargo test --all")).toBe("cargo test --all");
+  expect(parseAcceptanceLine("acceptance: none")).toBeUndefined();
+  expect(parseAcceptanceLine("The acceptance of this is unclear")).toBeUndefined();
+});
+
+test("an explicit command beats detection and the nearest folder wins", () => {
+  const root = temp();
+  mkdirSync(join(root, ".git"));
+  writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { test: "vitest" } }));
+  expect(resolveProject(root).acceptance).toMatchObject({ command: "npm test", source: "package.json" });
+  writeFileSync(join(root, "AGENTS.md"), "acceptance: node check.js\n");
+  expect(resolveProject(root).acceptance).toMatchObject({ command: "node check.js", source: "AGENTS.md" });
+  mkdirSync(join(root, ".codex"));
+  writeFileSync(join(root, ".codex", "longrun.json"), JSON.stringify({ acceptance: "make verify", maxContinuations: 3 }));
+  const plan = resolveProject(root);
+  expect(plan.acceptance).toMatchObject({ command: "make verify", source: "project-file" });
+  expect(plan.maxContinuations).toBe(3);
+  const nested = join(root, "packages", "app");
+  mkdirSync(nested, { recursive: true });
+  expect(resolveProject(nested).acceptance?.command).toBe("make verify");
+});
+
+test("detection ignores the npm placeholder test and recognises other runners", () => {
+  const root = temp();
+  writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }));
+  expect(resolveProject(root).acceptance).toBeUndefined();
+  writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+  writeFileSync(join(root, "bun.lock"), "");
+  expect(resolveProject(root).acceptance?.command).toBe("bun run test");
+  const rust = temp();
+  writeFileSync(join(rust, "Cargo.toml"), "[package]\nname='x'\n");
+  expect(resolveProject(rust).acceptance?.command).toBe("cargo test");
+  const go = temp();
+  writeFileSync(join(go, "go.mod"), "module x\n");
+  expect(resolveProject(go).acceptance?.command).toBe("go test ./...");
+  const py = temp();
+  mkdirSync(join(py, "tests"));
+  writeFileSync(join(py, "tests", "test_a.py"), "def test_a(): pass\n");
+  expect(resolveProject(py).acceptance?.command).toBe("python -m pytest -q");
+  const make = temp();
+  writeFileSync(join(make, "Makefile"), "build:\n\techo\ntest:\n\techo ok\n");
+  expect(resolveProject(make).acceptance?.command).toBe("make test");
+});
+
+test("a project can switch long-run off with a file or a setting", () => {
+  const off = temp();
+  mkdirSync(join(off, ".longrun"));
+  writeFileSync(join(off, ".longrun", "off"), "");
+  expect(resolveProject(off).enabled).toBe(false);
+  const json = temp();
+  mkdirSync(join(json, ".codex"));
+  writeFileSync(join(json, ".codex", "longrun.json"), JSON.stringify({ enabled: false }));
+  expect(resolveProject(json).enabled).toBe(false);
+});
+
+// ---- fingerprint
+
+test("the fingerprint changes when files change and not when nothing happens", () => {
+  const repo = temp();
+  const git = (...args: string[]) => spawnSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...args], { encoding: "utf8" });
+  git("init", "-q");
+  writeFileSync(join(repo, "a.txt"), "one");
+  git("add", "-A");
+  git("commit", "-qm", "seed");
+  const clean = workTreeFingerprint(repo);
+  expect(workTreeFingerprint(repo)).toBe(clean);
+  writeFileSync(join(repo, "a.txt"), "two!");
+  const edited = workTreeFingerprint(repo);
+  expect(edited).not.toBe(clean);
+  writeFileSync(join(repo, "new.txt"), "x");
+  expect(workTreeFingerprint(repo)).not.toBe(edited);
+  expect(edited.startsWith("git:")).toBe(true);
+  const plain = temp();
+  writeFileSync(join(plain, "a.txt"), "1");
+  const before = workTreeFingerprint(plain);
+  expect(before.startsWith("dir:")).toBe(true);
+  writeFileSync(join(plain, "b.txt"), "2");
+  expect(workTreeFingerprint(plain)).not.toBe(before);
+});
+
+// ---- acceptance runner
+
+test("the acceptance runner reports success, failure with an output tail, and a timeout", async () => {
+  const dir = temp();
+  const node = process.execPath.replaceAll("\\", "/");
+  const ok = await runAcceptance(`"${node}" -e "console.log('fine')"`, dir, { timeoutMs: 20_000, tailChars: 500 });
+  expect(ok.ok).toBe(true);
+  expect(ok.tail).toContain("fine");
+  const bad = await runAcceptance(`"${node}" -e "console.error('boom 12345 in 20ms'); process.exit(3)"`, dir, { timeoutMs: 20_000, tailChars: 500 });
+  expect(bad.ok).toBe(false);
+  expect(bad.exitCode).toBe(3);
+  expect(bad.tail).toContain("boom");
+  const again = await runAcceptance(`"${node}" -e "console.error('boom 99999 in 31ms'); process.exit(3)"`, dir, { timeoutMs: 20_000, tailChars: 500 });
+  expect(again.signature).toBe(bad.signature);
+  const slow = await runAcceptance(`"${node}" -e "setTimeout(()=>{}, 60000)"`, dir, { timeoutMs: 600, tailChars: 500 });
+  expect(slow.ok).toBe(false);
+  expect(slow.timedOut).toBe(true);
+  expect(slow.tail).toContain("stopped after");
+  const missing = await runAcceptance("definitely-not-a-command-xyz", dir, { timeoutMs: 20_000, tailChars: 500 });
+  expect(missing.ok).toBe(false);
+}, 60_000);
+
+test("output tails are cut at a line and colour codes are removed", () => {
+  const long = Array.from({ length: 200 }, (_, index) => `line ${index}`).join("\n");
+  const tail = tailOf(long, 100);
+  expect(tail.startsWith("…")).toBe(true);
+  expect(tail.endsWith("line 199")).toBe(true);
+  expect(tailOf("\u001B[31mred\u001B[0m", 100)).toBe("red");
+  expect(failureSignature(1, false, "a 1234\nb")).toBe(failureSignature(1, false, "a 9999\nb"));
+  expect(failureSignature(1, false, "a")).not.toBe(failureSignature(2, false, "a"));
+});
+
+test("a trailing question means the model is waiting for the user", () => {
+  expect(endsWithQuestion("I changed it.\n\nWhich database should I use?")).toBe(true);
+  expect(endsWithQuestion("Shall I continue (yes/no)?")).toBe(true);
+  expect(endsWithQuestion("All done. Tests pass.")).toBe(false);
+  expect(endsWithQuestion("Why did it fail?\n\nBecause of X.")).toBe(false);
+  expect(endsWithQuestion("```\nx?\n```")).toBe(false);
+});
+
+// ---- hook decisions
+
+test("models that are not ChatGPT web models and subagents are never touched", async () => {
+  const { deps, calls } = fakeDeps();
+  expect(await handleStop(stop({ model: "gpt-6-luna" }), deps)).toBeUndefined();
+  expect(await handleStop(stop({ agent_id: "sub-1" }), deps)).toBeUndefined();
+  expect(await handleStop(stop({ session_id: "bad id" }), deps)).toBeUndefined();
+  expect(calls.acceptance).toBe(0);
+  const off = fakeDeps({ settings: () => normalizeSettings({ enabled: false }) });
+  expect(await handleStop(stop(), off.deps)).toBeUndefined();
+});
+
+test("a question-only turn that changed nothing ends normally", async () => {
+  const { deps, calls } = fakeDeps({ fingerprints: ["fp0", "fp0"] });
+  handlePrompt(prompt("explain this repo"), deps);
+  expect(await handleStop(stop(), deps)).toBeUndefined();
+  expect(calls.acceptance).toBe(0);
+});
+
+test("a session that began before the hooks existed is adopted without interfering", async () => {
+  const { deps, calls, home } = fakeDeps();
+  expect(await handleStop(stop(), deps)).toBeUndefined();
+  expect(calls.log).toContain("session_adopted");
+  expect(loadState(SESSION, home)).toBeDefined();
+});
+
+test("work that fails the check is sent back with the output, then the pass is announced", async () => {
+  const { deps, calls, home } = fakeDeps({
+    fingerprints: ["base", "edited", "after1", "edited2", "after2"],
+    results: [{ ok: false, tail: "FAIL: 2 tests", signature: "a" }, { ok: true }],
+  });
+  handlePrompt(prompt("build the feature"), deps);
+  const first = await handleStop(stop(), deps);
+  expect(first).toMatchObject({ decision: "block" });
+  expect((first as { reason: string }).reason).toContain(LONGRUN_MARK);
+  expect((first as { reason: string }).reason).toContain("FAIL: 2 tests");
+  expect((first as { reason: string }).reason).toContain("npm test");
+  expect(loadState(SESSION, home)?.continuations).toBe(1);
+  const second = await handleStop(stop({ stop_hook_active: true }), deps);
+  expect(second).toMatchObject({ systemMessage: expect.stringContaining("Acceptance passed after 1 automatic continuation") });
+  expect(loadState(SESSION, home)?.continuations).toBe(0);
+  expect(calls.acceptance).toBe(2);
+});
+
+test("a passing check on the first try is silent", async () => {
+  const { deps } = fakeDeps({ fingerprints: ["base", "edited", "after"], results: [{ ok: true }] });
+  handlePrompt(prompt("do it"), deps);
+  expect(await handleStop(stop(), deps)).toBeUndefined();
+});
+
+test("a turn that ends with a question is not continued", async () => {
+  const { deps, calls } = fakeDeps({ fingerprints: ["base", "edited"] });
+  handlePrompt(prompt("do it"), deps);
+  expect(await handleStop(stop({ last_assistant_message: "Which framework do you prefer?" }), deps)).toBeUndefined();
+  expect(calls.acceptance).toBe(0);
+});
+
+test("the continuation limit ends the loop once and then stays quiet until the next request", async () => {
+  const fingerprints = ["base", ...Array.from({ length: 40 }, (_, index) => `e${index}`)];
+  const { deps, calls } = fakeDeps({
+    settings: () => normalizeSettings({ maxContinuations: 2, sameFailureLimit: 50 }),
+    fingerprints,
+    results: Array.from({ length: 10 }, (_, index) => ({ ok: false, signature: `s${index}` })),
+  });
+  handlePrompt(prompt("go"), deps);
+  expect((await handleStop(stop(), deps) as { decision?: string }).decision).toBe("block");
+  expect((await handleStop(stop(), deps) as { decision?: string }).decision).toBe("block");
+  const gave = await handleStop(stop(), deps);
+  expect(gave).toMatchObject({ systemMessage: expect.stringContaining("limit of 2 automatic continuations") });
+  expect(await handleStop(stop(), deps)).toBeUndefined();
+  expect(calls.acceptance).toBe(2);
+  handlePrompt(prompt("try again"), deps);
+  expect(loadState(SESSION, deps.home)?.gaveUp).toBe(false);
+});
+
+test("the same failure with no edits in between ends the loop early", async () => {
+  const { deps } = fakeDeps({
+    settings: () => normalizeSettings({ sameFailureLimit: 2 }),
+    fingerprints: ["base", "edited", "after", "after", "after", "after", "after", "after"],
+    results: [{ ok: false, signature: "x" }, { ok: false, signature: "x" }, { ok: false, signature: "x" }, { ok: false, signature: "x" }],
+  });
+  handlePrompt(prompt("go"), deps);
+  expect((await handleStop(stop(), deps) as { decision?: string }).decision).toBe("block");
+  expect((await handleStop(stop(), deps) as { decision?: string }).decision).toBe("block");
+  const result = await handleStop(stop(), deps);
+  expect(result).toMatchObject({ systemMessage: expect.stringContaining("same failure came back") });
+});
+
+test("the time budget per request is enforced", async () => {
+  let now = 0;
+  const { deps } = fakeDeps({
+    settings: () => normalizeSettings({ maxHours: 1 }),
+    now: () => now,
+    fingerprints: ["base", "edited", "edited"],
+    results: [{ ok: false }],
+  });
+  handlePrompt(prompt("go"), deps);
+  now = 2 * 3_600_000;
+  const result = await handleStop(stop(), deps);
+  expect(result).toMatchObject({ systemMessage: expect.stringContaining("1 hour budget") });
+});
+
+test("without an acceptance command the user is told once how to add one", async () => {
+  const { deps, calls } = fakeDeps({
+    project: () => ({ enabled: true, root: "C:/p" }),
+    fingerprints: ["base", "edited", "edited", "edited2"],
+  });
+  handlePrompt(prompt("go"), deps);
+  const first = await handleStop(stop(), deps);
+  expect(first).toMatchObject({ systemMessage: expect.stringContaining("acceptance: npm test") });
+  expect(await handleStop(stop(), deps)).toBeUndefined();
+  expect(calls.acceptance).toBe(0);
+});
+
+test("a project that switched long-run off is left alone", async () => {
+  const { deps, calls } = fakeDeps({ project: () => ({ enabled: false, root: "C:/p" }), fingerprints: ["base", "edited"] });
+  handlePrompt(prompt("go"), deps);
+  expect(await handleStop(stop(), deps)).toBeUndefined();
+  expect(calls.acceptance).toBe(0);
+});
+
+test("feedback injected by the Stop hook does not count as a new request", async () => {
+  const { deps, home } = fakeDeps({ fingerprints: ["base", "edited", "after", "later"], results: [{ ok: false }] });
+  handlePrompt(prompt("go"), deps);
+  await handleStop(stop(), deps);
+  expect(loadState(SESSION, home)?.continuations).toBe(1);
+  handlePrompt(prompt(`${LONGRUN_MARK} The acceptance check failed`), deps);
+  expect(loadState(SESSION, home)?.continuations).toBe(1);
+  handlePrompt(prompt("a real follow-up"), deps);
+  expect(loadState(SESSION, home)?.continuations).toBe(0);
+});
+
+test("state survives a round trip and rejects tampering", () => {
+  const home = temp();
+  const state = freshState(SESSION, "fp", 5);
+  saveState({ ...state, continuations: 3 }, home);
+  expect(loadState(SESSION, home)?.continuations).toBe(3);
+  expect(loadState("../../etc", home)).toBeUndefined();
+  writeFileSync(join(home, "longrun", "state", `${SESSION}.json`), "{broken");
+  expect(loadState(SESSION, home)).toBeUndefined();
+});
+
+// ---- the real CLI, fail-open
+
+function runCli(args: string[], home: string, input: string) {
+  return spawnSync(process.execPath, [join(import.meta.dir, "..", "src", "cli.ts"), "--home", home, ...args], {
+    input, encoding: "utf8", timeout: 60_000, env: { ...process.env, CODEX_CHATGPT_WEB_HOME: home },
+  });
+}
+
+test("the hook command fails open on garbage and prints a block decision for failing work", () => {
+  const home = temp();
+  const garbage = runCli(["hook", "stop"], home, "not json");
+  expect(garbage.status).toBe(0);
+  expect(garbage.stdout).toBe("");
+
+  const project = temp("longrun-project-");
+  const git = (...args: string[]) => spawnSync("git", ["-C", project, "-c", "user.name=t", "-c", "user.email=t@t", ...args], { encoding: "utf8" });
+  git("init", "-q");
+  writeFileSync(join(project, "AGENTS.md"), `acceptance: "${process.execPath.replaceAll("\\", "/")}" -e "console.log('NOT YET'); process.exit(1)"\n`);
+  git("add", "-A");
+  git("commit", "-qm", "seed");
+  const base = { session_id: SESSION, cwd: project, model: "chatgpt-web/gpt-6-sol" };
+  expect(runCli(["hook", "prompt"], home, JSON.stringify({ ...base, hook_event_name: "UserPromptSubmit", prompt: "build it" })).status).toBe(0);
+  writeFileSync(join(project, "work.txt"), "changed");
+  const result = runCli(["hook", "stop"], home, JSON.stringify({ ...base, hook_event_name: "Stop", last_assistant_message: "Done." }));
+  expect(result.status).toBe(0);
+  const output = JSON.parse(result.stdout.trim());
+  expect(output.decision).toBe("block");
+  expect(output.reason).toContain("NOT YET");
+  expect(readFileSync(join(home, "longrun", "hook.log"), "utf8")).toContain('"event":"continue"');
+}, 120_000);
