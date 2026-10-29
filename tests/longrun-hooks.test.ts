@@ -204,8 +204,9 @@ test("a trailing question means the model is waiting for the user", () => {
 
 test("models that are not ChatGPT web models and subagents are never touched", async () => {
   const { deps, calls } = fakeDeps();
-  expect(await handleStop(stop({ model: "gpt-6-luna" }), deps)).toBeUndefined();
+  expect(await handleStop(stop({ model: "gpt-6-terra" }), deps)).toBeUndefined();
   expect(await handleStop(stop({ agent_id: "sub-1" }), deps)).toBeUndefined();
+  expect(await handleStop(stop({ model: "gpt-6-luna", agent_id: "sub-1" }), deps)).toBeUndefined();
   expect(await handleStop(stop({ session_id: "bad id" }), deps)).toBeUndefined();
   expect(calls.acceptance).toBe(0);
   const off = fakeDeps({ settings: () => normalizeSettings({ enabled: false }) });
@@ -428,3 +429,33 @@ test("through the real CLI an untrusted folder is explained once and its command
   expect(JSON.parse(result.stdout.trim()).systemMessage).toContain("not trusted in Codex");
   expect(existsSync(marker)).toBe(false);
 }, 120_000);
+
+// ---- Luna drives, Sol works
+
+test("a Luna driver session is supervised like a web model and is told to hand the fix to a worker", async () => {
+  const luna = fakeDeps({ fingerprints: ["a", "b", "b", "b"], results: [{ ok: false, tail: "boom" }] });
+  handlePrompt(prompt("Build it", { model: "gpt-6-luna" }), luna.deps);
+  const output = await handleStop(stop({ model: "gpt-6-luna" }), luna.deps);
+  expect(output).toMatchObject({ decision: "block" });
+  expect((output as { reason: string }).reason).toContain("You are the driver");
+  expect((output as { reason: string }).reason).toContain("boom");
+  const web = fakeDeps({ fingerprints: ["a", "b", "b", "b"], results: [{ ok: false }] });
+  handlePrompt(prompt("Build it"), web.deps);
+  expect((await handleStop(stop(), web.deps) as { reason: string }).reason).not.toContain("You are the driver");
+});
+
+test("Luna is left alone when the driver setting is off", async () => {
+  const off = fakeDeps({ settings: () => normalizeSettings({ driver: false }), fingerprints: ["a", "b", "b"], results: [{ ok: false }] });
+  handlePrompt(prompt("Build it", { model: "gpt-6-luna" }), off.deps);
+  expect(await handleStop(stop({ model: "gpt-6-luna" }), off.deps)).toBeUndefined();
+  expect(off.calls.acceptance).toBe(0);
+});
+
+test("worker settings are validated so only a ChatGPT web model and a known effort are accepted", () => {
+  expect(normalizeSettings({}).workerModel).toBe("chatgpt-web/gpt-6-sol");
+  expect(normalizeSettings({}).workerEffort).toBe("high");
+  expect(normalizeSettings({ workerEffort: "xhigh", workerModel: "chatgpt-web/gpt-6-pro" })).toMatchObject({ workerEffort: "xhigh", workerModel: "chatgpt-web/gpt-6-pro" });
+  expect(normalizeSettings({ workerEffort: "instant", workerModel: "gpt-6-luna" })).toMatchObject({ workerEffort: "high", workerModel: "chatgpt-web/gpt-6-sol" });
+  expect(normalizeSettings({ workerModel: "chatgpt-web/x y; rm" }).workerModel).toBe("chatgpt-web/gpt-6-sol");
+  expect(normalizeSettings({ driverModelPrefixes: [] }).driverModelPrefixes).toEqual(["gpt-6-luna", "gpt-5.6-luna"]);
+});

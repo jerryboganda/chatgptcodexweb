@@ -19,11 +19,31 @@ export interface LongrunSettings {
   sameFailureLimit: number;
   acceptanceTimeoutMinutes: number;
   outputTailChars: number;
+  /**
+   * "Luna drives, Sol works": a native Luna model on the Codex quota runs the task and hands the coding to
+   * a ChatGPT web worker. The Stop hook supervises these driver models as well.
+   */
+  driver: boolean;
+  driverModelPrefixes: string[];
+  workerModel: string;
+  workerEffort: WorkerEffort;
+  /** Sandbox of the worker's own Codex run. */
+  workerSandbox: WorkerSandbox;
 }
+
+export const WORKER_EFFORTS = ["medium", "high", "xhigh"] as const;
+export type WorkerEffort = typeof WORKER_EFFORTS[number];
+export const WORKER_SANDBOXES = ["workspace-write", "danger-full-access"] as const;
+export type WorkerSandbox = typeof WORKER_SANDBOXES[number];
 
 export const DEFAULT_LONGRUN_SETTINGS: LongrunSettings = Object.freeze({
   enabled: true,
   modelPrefixes: ["chatgpt-web/"],
+  driver: true,
+  driverModelPrefixes: ["gpt-6-luna", "gpt-5.6-luna"],
+  workerModel: "chatgpt-web/gpt-6-sol",
+  workerEffort: "high" as WorkerEffort,
+  workerSandbox: "workspace-write" as WorkerSandbox,
   maxContinuations: 40,
   maxHours: 20,
   sameFailureLimit: 5,
@@ -63,9 +83,20 @@ export function normalizeSettings(raw: unknown): LongrunSettings {
   const prefixes = Array.isArray(source.modelPrefixes)
     ? source.modelPrefixes.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim())
     : [];
+  const driverPrefixes = Array.isArray(source.driverModelPrefixes)
+    ? source.driverModelPrefixes.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim())
+    : [];
+  const workerModel = typeof source.workerModel === "string" && /^chatgpt-web\/[A-Za-z0-9._-]{1,80}$/.test(source.workerModel.trim())
+    ? source.workerModel.trim() : defaults.workerModel;
+  const workerEffort = WORKER_EFFORTS.find((effort) => effort === source.workerEffort) ?? defaults.workerEffort;
   return {
     enabled: source.enabled === false ? false : true,
     modelPrefixes: prefixes.length > 0 ? prefixes.slice(0, 20) : [...defaults.modelPrefixes],
+    driver: source.driver === false ? false : true,
+    driverModelPrefixes: driverPrefixes.length > 0 ? driverPrefixes.slice(0, 20) : [...defaults.driverModelPrefixes],
+    workerModel,
+    workerEffort,
+    workerSandbox: WORKER_SANDBOXES.find((sandbox) => sandbox === source.workerSandbox) ?? defaults.workerSandbox,
     maxContinuations: Math.round(clampNumber(source.maxContinuations, LONGRUN_LIMITS.maxContinuations, defaults.maxContinuations)),
     maxHours: clampNumber(source.maxHours, LONGRUN_LIMITS.maxHours, defaults.maxHours),
     sameFailureLimit: Math.round(clampNumber(source.sameFailureLimit, LONGRUN_LIMITS.sameFailureLimit, defaults.sameFailureLimit)),

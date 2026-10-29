@@ -30,7 +30,7 @@ import { installRuntimeKeyBytes, managedRuntimeKeyPath, stopTunnel, tunnelStatus
 import { getTunnelServiceStatus, restartTunnelService, startTunnelService, stopTunnelService, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
 import { runDevCommand } from "./dev-chat/cli";
-import { longrunCommand, runLongrunHook, syncLongrunHooks } from "./longrun/cli";
+import { longrunCommand, runLongrunHook, syncLongrunHooks, workerCommand } from "./longrun/cli";
 
 const HELP = `codex-chatgpt-web ${VERSION}
 
@@ -91,7 +91,8 @@ Setup options:
   --acknowledge-unofficial     Accept the one-time unofficial-browser-automation notice
 
 Long-run (keep a ChatGPT web task going until its check passes):
-  longrun [status|on|off|install|uninstall]
+  longrun [status|on|off|install|uninstall|worker <effort>|driver on|off]
+  worker run [--brief-file <file>] [--effort <effort>]   run one job on the ChatGPT web worker (used by a Luna driver)
                                Automatic mode is on by default; see docs/long-horizon.md
 
 Global:
@@ -639,6 +640,7 @@ async function main(): Promise<void> {
     else throw new Error("Hook command must be: hook interrupt | hook stop | hook prompt");
   }
   else if (command === "longrun") await longrunCommand(args);
+  else if (command === "worker") await workerCommand(args);
   else if (command === "tunnel") await tunnelCommand(args);
   else if (command === "open") await openCommand(args);
   else if (command === "uninstall") await uninstallCommand(args);

@@ -53,6 +53,32 @@ marked block of `config.toml` (a backup of the file from before the first change
 Decisions are logged without prompts or command output in `~/.codex-chatgpt-web/longrun/hook.log`. Start a new Codex
 chat after the first install so Codex loads the hooks.
 
+## Luna drives, Sol works
+
+Pick a **Luna** model (`gpt-6-luna`, High) in Codex and type the task as usual. Luna runs on your **Codex quota** and is
+the driver: it keeps `.longrun/PROGRESS.md`, hands the coding and review to **one ChatGPT web worker at a time**
+(`chatgpt-web/gpt-6-sol` at the effort you chose), checks every result itself, and starts a fresh worker with a short
+brief when one fails. A new worker means a new ChatGPT chat, so one long or broken web chat cannot spoil the task, and
+Luna's own thread uses Codex's native compaction. The Stop hook above supervises Luna sessions too, so the task ends
+when the acceptance command passes, not when Luna says so.
+
+The bridge installs the instructions as a marked block in `~/.codex/AGENTS.md` (only when the route is installed). The
+block asks something only of a main-agent Luna; any other model or subagent is told to ignore it. Luna hands a job over
+by running `codex-chatgpt-web worker run --brief-file .longrun/brief.md`, a plain command (the block holds its exact
+path). It starts `codex exec` on the worker model in a new chat, so the worker's own Stop hook also keeps it going until
+the acceptance command passes. If that chat breaks, up to three fresh chats are tried, each told what went wrong. Codex's
+built-in subagent tool is not used: it only starts agents when the user asks for them by name, so it cannot be relied on.
+
+```bash
+codex-chatgpt-web longrun worker xhigh     # worker effort: medium, high or xhigh (default high)
+codex-chatgpt-web longrun driver off       # Luna works alone again; `driver on` switches it back
+codex-chatgpt-web longrun status           # shows the driver, the worker and whether the block is installed
+```
+
+Open a new Codex chat after changing either setting. Whether Luna hands the work over is its own decision, guided by
+the block; the acceptance command is what enforces completion. The worker's sandbox is `workerSandbox` in
+`~/.codex-chatgpt-web/longrun.json` (`workspace-write` by default, or `danger-full-access`).
+
 The rest of this page describes the **unattended supervisor**, a separate script for jobs you start yourself.
 
 `scripts/longrun/longrun.mjs` drives a Codex task for hours without you. The coding itself runs through

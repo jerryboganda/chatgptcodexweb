@@ -81,7 +81,14 @@ function text(value: unknown): string {
 
 function supervised(model: unknown, settings: LongrunSettings): boolean {
   const id = text(model);
-  return id.length > 0 && settings.modelPrefixes.some((prefix) => id.startsWith(prefix));
+  if (id.length === 0) return false;
+  return settings.modelPrefixes.some((prefix) => id.startsWith(prefix)) || isDriver(model, settings);
+}
+
+/** A native Luna model that drives the task and hands the coding to a ChatGPT web worker. */
+function isDriver(model: unknown, settings: LongrunSettings): boolean {
+  const id = text(model);
+  return settings.driver && id.length > 0 && settings.driverModelPrefixes.some((prefix) => id.startsWith(prefix));
 }
 
 /**
@@ -100,7 +107,7 @@ function minutes(ms: number): number {
 }
 
 function blockReason(options: {
-  attempt: number; max: number; command: string; result: AcceptanceResult; elapsedMs: number;
+  attempt: number; max: number; command: string; result: AcceptanceResult; elapsedMs: number; driver: boolean;
 }): string {
   const { attempt, max, command, result } = options;
   const status = result.timedOut ? "timed out" : `exit code ${result.exitCode ?? "none"}`;
@@ -112,7 +119,9 @@ function blockReason(options: {
     "```",
     result.tail || "(no output)",
     "```",
-    "Find the cause and fix it, then check again. Do not stop until this command exits with code 0.",
+    options.driver
+      ? "You are the driver: give the fix to a worker subagent as your instructions say, then run this command yourself. Do not stop until it exits with code 0."
+      : "Find the cause and fix it, then check again. Do not stop until this command exits with code 0.",
     "If you are sure the check itself is wrong or you cannot go on without the user, say exactly why in your answer instead of stopping silently.",
   ].join("\n");
 }
@@ -217,6 +226,9 @@ export async function handleStop(input: StopHookInput, deps: HookDeps): Promise<
   deps.log("continue", { session: sessionId, continuation: state.continuations, sameFailure });
   return {
     decision: "block",
-    reason: blockReason({ attempt: state.continuations, max: maxContinuations, command: plan.acceptance.command, result, elapsedMs }),
+    reason: blockReason({
+      attempt: state.continuations, max: maxContinuations, command: plan.acceptance.command, result, elapsedMs,
+      driver: isDriver(input.model, settings),
+    }),
   };
 }
