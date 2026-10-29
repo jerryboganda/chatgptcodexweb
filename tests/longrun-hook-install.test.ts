@@ -31,13 +31,20 @@ test("hook hashes match the values Codex 0.165 accepted for the same command and
   expect(longrunHookHash("user_prompt_submit", prompt, 10)).toBe("sha256:41490aefe137336b583842d13755eb7d6bd7e76085af7b50a455d84aad59e204");
 });
 
-test("the hook commands quote the runtime for the platform shell", () => {
+test("the hook commands use the Windows shapes Codex really executes", () => {
+  // Codex 0.165 never runs a hook whose program path is in double quotes; plain words and a PowerShell call work.
+  const plain = longrunHookCommands({ runtimeCommand: ["C:\\rt\\bun.exe", "C:\\app\\cli.js"] }, "C:\\h", "win32");
+  expect(plain.stop).toBe("C:\\rt\\bun.exe C:\\app\\cli.js --home C:\\h hook stop");
+  expect(plain.prompt.endsWith("hook prompt")).toBe(true);
   const windows = longrunHookCommands({ runtimeCommand: ["C:\\Program Files\\rt\\bun.exe", "C:\\app\\cli.js"] }, "C:\\h", "win32");
-  expect(windows.stop).toBe('"C:\\Program Files\\rt\\bun.exe" "C:\\app\\cli.js" "--home" "C:\\h" "hook" "stop"');
-  expect(windows.prompt.endsWith('"hook" "prompt"')).toBe(true);
+  expect(windows.stop).toBe("powershell -NoProfile -NonInteractive -Command \"& 'C:\\Program Files\\rt\\bun.exe' 'C:\\app\\cli.js' '--home' 'C:\\h' 'hook' 'stop'\"");
+  expect(windows.prompt.endsWith("'hook' 'prompt'\"")).toBe(true);
+  const apostrophe = longrunHookCommands({ runtimeCommand: ["C:\\O'Neil\\bun.exe", "C:\\app\\cli.js"] }, "C:\\h", "win32");
+  expect(apostrophe.stop).toContain("'C:\\O''Neil\\bun.exe'");
+  expect(() => longrunHookCommands({ runtimeCommand: ["C:\\100%\\bun.exe"] }, "C:\\h", "win32")).toThrow("cannot pass");
   const posix = longrunHookCommands({ runtimeCommand: ["/opt/rt/bun", "/opt/app/cli.js"] }, "/home/x/.h", "linux");
   expect(posix.stop).toBe("'/opt/rt/bun' '/opt/app/cli.js' '--home' '/home/x/.h' 'hook' 'stop'");
-  expect(() => longrunHookCommands({ runtimeCommand: ['C:\\bad"path'] }, "C:\\h", "win32")).toThrow("invalid Windows character");
+  expect(() => longrunHookCommands({ runtimeCommand: ['C:\\bad"path'] }, "C:\\h", "win32")).toThrow("cannot pass");
 });
 
 test("installing adds trusted Stop and UserPromptSubmit hooks and is idempotent", () => {
