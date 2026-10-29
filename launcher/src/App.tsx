@@ -14,6 +14,8 @@ import { createPortal } from "react-dom";
 import { copyFor, localizeRuntimeMessage, type Copy } from "./i18n";
 import { Icon, type IconName } from "./icons";
 import { LimitsSurface } from "./LimitsSurface";
+import { LongrunSurface } from "./LongrunSurface";
+import { longrunCopyFor } from "./longrun-copy";
 import { limitsCopyFor } from "./limits-copy";
 import { useLimits } from "./useLimits";
 import { describeTurnActivity } from "./turn-activity";
@@ -388,6 +390,7 @@ function LauncherShell({
   const approvalTabs = browser?.tabs.filter(tab => tab.status === "running" && tab.approvalPending) ?? [];
   const limits = useLimits(api!, snapshot.state.browserInteractionMode === "manual");
   const limitsCopy = limitsCopyFor(language);
+  const longrunTitle = longrunCopyFor(language).title;
 
   useEffect(() => {
     if (snapshot.state.browserInteractionMode === "manual" || snapshot.state.biggerContextAvailable !== true) {
@@ -636,6 +639,7 @@ function LauncherShell({
                   label={limitsCopy.title}
                   onClick={() => navigateSurface("limits")}
                 />
+                <SidebarItem active={surface === "longrun"} icon="longrun" label={longrunTitle} onClick={() => navigateSurface("longrun")} />
               </SidebarGroup>
             </nav>
 
@@ -750,6 +754,9 @@ function LauncherShell({
                   || browser?.tabs.some((tab) => tab.status === "running" || tab.status === "testing" || tab.loading) === true}
                 setError={setError}
               />
+            ) : null}
+            {surface === "longrun" ? (
+              <LongrunSurface api={api!} language={language} setError={setError} />
             ) : null}
             {surface === "settings" ? (
               <SettingsSurface

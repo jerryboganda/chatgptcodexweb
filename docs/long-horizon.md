@@ -11,6 +11,22 @@ node scripts/longrun/longrun.mjs --repo <project> --task task.md --verify "npm t
 
 Windows: `scripts\longrun\longrun.cmd` takes the same arguments.
 
+## In the desktop app
+
+The supervisor is built into the app (sidebar: **Long-run tasks**). Pick the project folder, describe the task,
+add an acceptance command, choose the effort and press **Add and start**. The app then:
+
+- runs the supervisor with its own executable, so nothing else has to be installed and no administrator rights are needed;
+- keeps the job going while the window is closed to the tray;
+- resumes every unfinished job by itself each time the app starts (including the automatic start at sign-in), so a
+  double-click on the icon, a reboot or an update brings the work back;
+- restarts a supervisor that dies and shows the reason when it gives up; picks up a supervisor left over from an earlier
+  app session instead of starting a second one;
+- shows a notification when a task finishes or stops, with the report one click away.
+
+Quitting the app (tray menu, Quit) pauses the jobs; they continue the next time the app opens. The command-line
+script below does the same work and can still be used on its own.
+
 ## What it does
 
 1. Creates a work branch (`longrun/<id>`), adds `.longrun/` to `.git/info/exclude`, and writes

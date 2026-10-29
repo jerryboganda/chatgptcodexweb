@@ -14,6 +14,7 @@ const {
   Menu,
   nativeImage,
   nativeTheme,
+  Notification,
   screen,
   session,
   shell,
@@ -22,6 +23,7 @@ const {
 const { BrowserHost, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { LimitsController } = require("./limits-controller.cjs");
+const { LongrunManager } = require("./longrun-manager.cjs");
 const { SOURCE_URL: LIMITS_SOURCE_URL } = require("./limits-store.cjs");
 const { releaseRetainedConversation } = require("./retained-turn-release.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
@@ -92,6 +94,7 @@ let mainWindowShowRequested = false;
 let startupFailed = false;
 let browserHost = null;
 let runtimeHost = null;
+let longrunManager = null;
 // Renderer actions can arrive as soon as loadRenderer starts, before startup has acquired any
 // runtime operation lock. Keep setup/settings behind startup and its recovery as one boundary.
 let finishRuntimeStartup;
@@ -588,6 +591,30 @@ function registerIpc({ logger, stateStore }) {
     update: updateController?.getState() ?? { status: "disabled" },
   }));
 
+  const longrunCall = (action) => async (_event, ...args) => {
+    try {
+      return { ok: true, ...(await action(...args)) };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  handle("launcher:longrun-list", () => ({ available: longrunManager.available(), jobs: longrunManager.list() }));
+  handle("launcher:longrun-create", longrunCall((input) => ({ job: longrunManager.create(input) })));
+  handle("launcher:longrun-start", longrunCall((id, options) => ({ job: longrunManager.start(String(id), { restart: options?.restart === true }) })));
+  handle("launcher:longrun-stop", longrunCall((id) => ({ job: longrunManager.stop(String(id)) })));
+  handle("launcher:longrun-remove", longrunCall((id) => { longrunManager.remove(String(id)); return {}; }));
+  handle("launcher:longrun-pick-folder", longrunCall(async () => {
+    const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
+    return { path: result.canceled ? null : result.filePaths[0] ?? null };
+  }));
+  handle("launcher:longrun-open", longrunCall(async (id, what) => {
+    const target = what === "report" ? longrunManager.reportPath(String(id)) : longrunManager.folderPath(String(id));
+    if (!fs.existsSync(target)) throw new Error("Nothing to open yet.");
+    const failure = await shell.openPath(target);
+    if (failure) throw new Error(failure);
+    return {};
+  }));
+
   handle("launcher:set-language", (_event, language) => {
     const state = stateStore.update({ language: validateLanguage(language) });
     updateTrayMenu(state.language);
@@ -1074,6 +1101,7 @@ async function requestQuit() {
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Web GPT`);
     }
+    longrunManager?.shutdown();
     await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
     stopCatalogVerificationMonitor();
     quitting = true;
@@ -1250,6 +1278,26 @@ async function start() {
     publish: (state) => send("launcher:update-state", state),
     logger,
   });
+  longrunManager = new LongrunManager({
+    dataDir: path.join(app.getPath("userData"), "longrun"),
+    scriptPath: app.isPackaged
+      ? path.join(process.resourcesPath, "longrun", "longrun.mjs")
+      : path.join(SOURCE_ROOT, "scripts", "longrun", "longrun.mjs"),
+    // The supervisor is plain Node code, so the app's own executable runs it and nothing else has to be installed.
+    executable: process.execPath,
+    env: { ELECTRON_RUN_AS_NODE: "1" },
+    launcher: app.isPackaged ? process.execPath : undefined,
+    logger,
+    onChange: () => send("launcher:longrun", longrunManager.list()),
+    onFinished: (job) => {
+      if (!Notification.isSupported()) return;
+      const done = job.phase === "done";
+      new Notification({
+        title: done ? "Long-run task finished" : "Long-run task stopped",
+        body: done ? `${job.title}: acceptance passed.` : `${job.title}: ${job.stopReason ?? job.phase}.`,
+      }).show();
+    },
+  });
   registerIpc({ logger, stateStore });
   const trayAvailable = createTray(logger, stateStore.read().language);
   if (startHidden && !trayAvailable) mainWindow.once("ready-to-show", () => showMainWindow());
@@ -1263,6 +1311,10 @@ async function start() {
   }
   await loadRenderer(mainWindow);
   if (!launcherSmokeTest) void updateController.checkOnce();
+  if (!launcherSmokeTest && !IS_DEV_PROFILE) {
+    // Jobs that were running when the app last closed continue on their own once the bridge is up.
+    void runtimeStartup.then(() => longrunManager.resumeAll());
+  }
   if (launcherSmokeTest) {
     const smokeRuntimeRoot = runtimeRootProvider();
     if (app.isPackaged && !smokeRuntimeRoot) {

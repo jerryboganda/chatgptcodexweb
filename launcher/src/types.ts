@@ -4,7 +4,41 @@ import type { LimitsSnapshot } from "./limits-types";
 export type Language = keyof typeof languages;
 export type LauncherProfile = "production" | "development";
 export type BrowserInteractionMode = "automatic" | "manual";
-export type Surface = "browser" | "setup" | "mcp" | "activity" | "limits" | "settings";
+export type Surface = "browser" | "setup" | "mcp" | "activity" | "limits" | "longrun" | "settings";
+
+export type LongrunPhase = "idle" | "running" | "restarting" | "waiting" | "done" | "stopped";
+export interface LongrunJob {
+  id: string;
+  title: string;
+  repo: string;
+  effort: "medium" | "high" | "xhigh";
+  sandbox: "workspace-write" | "danger-full-access";
+  verify: string;
+  maxHours: number;
+  createdAt: string;
+  desired: "running" | "idle";
+  phase: LongrunPhase;
+  external: boolean;
+  stopReason?: string;
+  rounds: number;
+  chats: number;
+  acceptance: "passing" | "failing" | "not run";
+  updatedAt?: string;
+  startedAt?: number;
+  activity?: string;
+  error?: string;
+  hasReport: boolean;
+}
+export interface LongrunInput {
+  repo: string;
+  task: string;
+  verify: string;
+  effort: "medium" | "high" | "xhigh";
+  maxHours?: number;
+  sandbox: "workspace-write" | "danger-full-access";
+  controller: boolean;
+}
+export type LongrunResult<T = object> = ({ ok: true } & T) | { ok: false; message: string };
 
 export interface LauncherState {
   version: 1;
@@ -140,6 +174,14 @@ export interface LauncherApi {
   snapshot(): Promise<LauncherSnapshot>;
   getLimits(): Promise<LimitsSnapshot>;
   setupLimits(): Promise<LimitsSnapshot>;
+  longrunList(): Promise<{ available: boolean; jobs: LongrunJob[] }>;
+  longrunCreate(input: LongrunInput): Promise<LongrunResult<{ job: LongrunJob }>>;
+  longrunStart(id: string, options?: { restart?: boolean }): Promise<LongrunResult<{ job: LongrunJob }>>;
+  longrunStop(id: string): Promise<LongrunResult<{ job: LongrunJob }>>;
+  longrunRemove(id: string): Promise<LongrunResult>;
+  longrunPickFolder(): Promise<LongrunResult<{ path: string | null }>>;
+  longrunOpen(id: string, what: "report" | "folder"): Promise<LongrunResult>;
+  onLongrun(listener: (jobs: LongrunJob[]) => void): () => void;
   setLanguage(language: Language): Promise<LauncherState>;
   openSocial(target: "github" | "x"): Promise<LauncherState>;
   completeOnboarding(language: Language, browserInteractionMode: BrowserInteractionMode): Promise<LauncherState>;

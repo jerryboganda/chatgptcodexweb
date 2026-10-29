@@ -15,6 +15,7 @@ export type IconName =
   | "globe"
   | "info"
   | "logs"
+  | "longrun"
   | "mcp"
   | "minus"
   | "pause"
@@ -44,6 +45,7 @@ export function Icon({ name, ...props }: { name: IconName } & SVGProps<SVGSVGEle
       {name === "globe" ? <><circle {...common} cx="12" cy="12" r="9" /><path {...common} d="M3 12h18M12 3c2.4 2.4 3.6 5.4 3.6 9S14.4 18.6 12 21c-2.4-2.4-3.6-5.4-3.6-9S9.6 5.4 12 3Z" /></> : null}
       {name === "info" ? <><circle {...common} cx="12" cy="12" r="9" /><path {...common} d="M12 10.5V17M12 7h.01" /></> : null}
       {name === "logs" ? <><path {...common} d="M6 4h12v16H6zM9 8h6M9 12h6M9 16h4" /></> : null}
+      {name === "longrun" ? <><path {...common} d="M20 12a8 8 0 0 1-13.7 5.6M4 12a8 8 0 0 1 13.7-5.6" /><path {...common} d="M18 3v4h-4M6 21v-4h4M12 8v4l2.5 1.5" /></> : null}
       {name === "mcp" ? <><path {...common} d="M8 7.5 12 4l4 3.5v5L12 16l-4-3.5v-5Z" /><path {...common} d="m8 12.5-3 2.7v3.3L8 21l3-2.5V16M16 12.5l3 2.7v3.3L16 21l-3-2.5V16" /></> : null}
       {name === "minus" ? <path {...common} d="M5 12h14" /> : null}
       {name === "pause" ? <><rect fill="currentColor" x="6" y="5" width="4" height="14" rx="1" /><rect fill="currentColor" x="14" y="5" width="4" height="14" rx="1" /></> : null}

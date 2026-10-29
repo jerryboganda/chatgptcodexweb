@@ -755,7 +755,7 @@ test("approval notices are visible outside Browser and open the exact waiting ta
     useState: value => [hookIndex++ === 0 ? currentSurface : value, () => {}],
     useRef: value => ({ current: value }), useEffect() {}, useLayoutEffect() {}, useCallback: callback => callback,
     window: { matchMedia: () => ({ matches: false }) }, COMPACT_SIDEBAR_QUERY: "fixture",
-    useLimits: () => ({}), limitsCopyFor: () => ({}), browserTabTitleFromTitle: title => title,
+    useLimits: () => ({}), limitsCopyFor: () => ({}), longrunCopyFor: () => ({}), browserTabTitleFromTitle: title => title,
     motion: { main: "main", aside: "aside", div: "div" },
     messageOf: String,
     api: {
