@@ -9,6 +9,9 @@ export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
   'button[data-testid="model-switcher-dropdown-button"][aria-haspopup="menu"]',
   // 2026-09-25 (2933410): power picker inside the markdown composer.
   'button[data-codex-intelligence-trigger="true"][data-composer-navigation-target="reasoning"][aria-haspopup="menu"]',
+  // 2026-10-29: the trigger lost data-tone, its test id and data-codex-intelligence-trigger and is
+  // labelled "Select ChatGPT model"; it still names its target and carries the selected effort.
+  'button[data-composer-navigation-target="reasoning"][data-selected-reasoning-effort][aria-haspopup="menu"]',
 ].join(", ");
 export const CHATGPT_EFFORT_MENU_SELECTOR = [
   '[data-testid="composer-intelligence-picker-content"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
