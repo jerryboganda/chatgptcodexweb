@@ -375,24 +375,3 @@ test("Windows packages embed the checksummed Bun baseline runtime for CPUs witho
   assert.match(baseline, /Get-FileHash[^\n]+SHA256/);
   assert.match(baseline, /CODEX_CHATGPT_WEB_EMBEDDED_BUN=/);
 });
-
-test("the long-run supervisor ships inside the app and runs on the app's own executable, without elevation", () => {
-  const resource = manifest.build.extraResources.find((entry) => entry.to === "longrun");
-  assert.ok(resource, "package.json must ship the supervisor as an extra resource");
-  assert.equal(resource.from, "../scripts/longrun");
-  const shipped = fs.readdirSync(path.join(launcherRoot, resource.from)).filter((name) => name.endsWith(".mjs"));
-  assert.ok(shipped.includes("longrun.mjs"));
-  for (const name of shipped) {
-    const source = fs.readFileSync(path.join(launcherRoot, resource.from, name), "utf8");
-    for (const match of source.matchAll(/from "\.\/([^"]+)"/g)) {
-      assert.ok(shipped.includes(match[1]), `${name} imports ${match[1]}, which would be missing from the installed app`);
-    }
-  }
-  const main = fs.readFileSync(path.join(launcherRoot, "electron", "main.cjs"), "utf8");
-  assert.match(main, /process\.resourcesPath, "longrun", "longrun\.mjs"/);
-  assert.match(main, /ELECTRON_RUN_AS_NODE: "1"/);
-  assert.match(main, /longrunManager\.resumeAll\(\)/);
-  assert.match(main, /longrunManager\?\.shutdown\(\)/);
-  assert.equal(manifest.build.nsis.allowElevation, false);
-  assert.ok(!JSON.stringify(manifest.build).includes("requireAdministrator"));
-});

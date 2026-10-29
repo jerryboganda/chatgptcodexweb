@@ -66,11 +66,6 @@
       {
         "from": "build/runtime",
         "to": "runtime"
-      },
-      {
-        "from": "../scripts/longrun",
-        "to": "longrun",
-        "filter": ["*.mjs"]
       }
     ],
     "mac": {
