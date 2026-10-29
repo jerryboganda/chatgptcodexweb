@@ -41,6 +41,12 @@ codex-chatgpt-web longrun on         # turn it back on
 Other switches: set `CODEX_LONGRUN=off` in the environment, create an empty `.longrun/off` file in a project, or put
 `"enabled": false` in `.codex/longrun.json`.
 
+**Trouble inside a turn** is handled by the bridge itself, with no hook involved: when ChatGPT says the model is at
+capacity or a usage limit was reached, the bridge keeps the Codex stream alive and retries in a fresh chat once the
+time passes (up to 2 hours per turn; `limitWaitMinutes` in the bridge config, `0` turns it off). A failed compaction
+falls back to a fresh summary instead of failing, and every compaction carries the original task, the standing
+instructions and the last tool actions, whatever the model wrote in its summary.
+
 **Safety.** The hooks fail open: any error means Codex behaves as if they were not installed. They only edit their own
 marked block of `config.toml` (a backup of the file from before the first change is kept in
 `~/.codex-chatgpt-web/longrun/`), and the block is removed by `longrun off` and by uninstalling the integration.
