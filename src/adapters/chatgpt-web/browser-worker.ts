@@ -2437,8 +2437,6 @@ export class ChatGptBrowserWorker {
       if (error instanceof ChatGptWebAdapterError) throw error;
       await throwIfChatGptRateLimitDialog(page);
       await throwIfChatGptSessionFailureAlert(page);
-      // A banner such as "A workspace member hit a limit" explains missing controls: wait it out.
-      await throwIfChatGptLimitNotice(page);
       throw chatGptModelControlUnavailableError(
         "ChatGPT rendered the composer but its model/effort control did not become ready",
       );

@@ -26,13 +26,6 @@ export function chatGptLimitNoticeTexts(root?: ParentNode): string[] {
     if (alert.closest(excluded) || !visible(alert)) continue;
     add(clean((alert as HTMLElement).innerText));
   }
-  // A banner above the composer ("A workspace member hit a limit ...") is a status region, not an alert.
-  // Only banners that talk about a limit or capacity are read.
-  for (const banner of scope.querySelectorAll('aside[role="status"], [data-testid*="banner"]')) {
-    if (banner.closest(excluded) || !visible(banner)) continue;
-    const text = clean((banner as HTMLElement).innerText);
-    if (/\b(?:limit|limits|capacity)\b/i.test(text)) add(text);
-  }
   // The response-error action is rendered beside its explanation, not inside an alert.
   for (const retry of scope.querySelectorAll('[data-testid="regenerate-thread-error-button"]')) {
     if (retry.closest(excluded) || !visible(retry)) continue;
