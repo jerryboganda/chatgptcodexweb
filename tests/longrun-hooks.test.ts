@@ -459,3 +459,18 @@ test("worker settings are validated so only a ChatGPT web model and a known effo
   expect(normalizeSettings({ workerModel: "chatgpt-web/x y; rm" }).workerModel).toBe("chatgpt-web/gpt-6-sol");
   expect(normalizeSettings({ driverModelPrefixes: [] }).driverModelPrefixes).toEqual(["gpt-6-luna", "gpt-5.6-luna"]);
 });
+
+test("each request to a Luna driver carries the standing request to use the worker, other sessions get nothing", () => {
+  const luna = fakeDeps();
+  const output = handlePrompt(prompt("Build a CLI", { model: "gpt-6-luna" }), luna.deps);
+  expect(output).toMatchObject({ hookSpecificOutput: { hookEventName: "UserPromptSubmit" } });
+  const context = (output as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+  expect(context).toContain("Luna drives, Sol works");
+  expect(context).toContain(".longrun/brief.md");
+  expect(context.startsWith(LONGRUN_MARK)).toBe(true);
+  expect(handlePrompt(prompt("Build a CLI"), fakeDeps().deps)).toBeUndefined();
+  expect(handlePrompt(prompt(`${LONGRUN_MARK} The acceptance check failed`, { model: "gpt-6-luna" }), fakeDeps().deps)).toBeUndefined();
+  expect(handlePrompt(prompt("Build", { model: "gpt-6-luna", agent_id: "sub" }), fakeDeps().deps)).toBeUndefined();
+  const off = fakeDeps({ settings: () => normalizeSettings({ driver: false }) });
+  expect(handlePrompt(prompt("Build", { model: "gpt-6-luna" }), off.deps)).toBeUndefined();
+});
