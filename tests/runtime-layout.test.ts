@@ -193,6 +193,24 @@ test("existing v3 configurations deterministically retain automatic browser inte
   });
 });
 
+test("the limit-wait budget is a validated config setting that reaches the provider", () => {
+  const root = join(tmpdir(), `codex-chatgpt-web-limit-wait-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  mkdirSync(root, { recursive: true });
+  const config = defaultConfig("browser-only");
+  // Unset by default: the adapter then uses its two-hour default.
+  expect(providerConfig(config).chatgptWeb?.limitWaitBudgetMs).toBeUndefined();
+  for (const [minutes, budgetMs] of [[45, 45 * 60_000], [0, 0], [0.5, 30_000]] as const) {
+    writeFileSync(join(root, "config.json"), `${JSON.stringify({ ...config, limitWaitMinutes: minutes })}\n`);
+    expect(providerConfig(loadConfig()).chatgptWeb?.limitWaitBudgetMs).toBe(budgetMs);
+  }
+  for (const invalid of [-1, "soon", null, Number.NaN]) {
+    writeFileSync(join(root, "config.json"), `${JSON.stringify({ ...config, limitWaitMinutes: invalid })}\n`);
+    expect(() => loadConfig()).toThrow("Invalid limitWaitMinutes");
+  }
+});
+
 test("Zero Risk fails closed without the Launcher browser host", () => {
   const root = join(tmpdir(), `codex-chatgpt-web-manual-host-${process.pid}-${Date.now()}`);
   roots.push(root);
@@ -307,6 +325,33 @@ test("retired chat preferences are removed without changing current configuratio
   }
   writeFileSync(join(root, "config.json"), JSON.stringify({ ...original, experimentalFreshConversationPerTurn: "true" }));
   expect(() => loadConfig()).toThrow("experimentalFreshConversationPerTurn");
+});
+
+test("Temporary Chat defaults on and preserves an explicit opt-out across config reloads", () => {
+  const root = join(tmpdir(), `codex-temporary-config-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  mkdirSync(root, { recursive: true });
+  const path = join(root, "config.json");
+  const original: Record<string, unknown> = { ...defaultConfig("browser-only"), useSavedChats: false };
+  expect(original.useTemporaryChats).toBe(true);
+  delete original.useTemporaryChats;
+  writeFileSync(path, JSON.stringify(original));
+  expect(loadConfig().useTemporaryChats).toBe(true);
+  for (const useTemporaryChats of [true, false]) {
+    writeFileSync(path, JSON.stringify({ ...original, useTemporaryChats }));
+    for (const loaded of [loadConfig(), loadConfigForSetup()]) {
+      expect(loaded.useTemporaryChats).toBe(useTemporaryChats);
+      for (const browserInteractionMode of ["automatic", "manual"] as const) {
+        expect(providerConfig({ ...loaded, browserInteractionMode }).chatgptWeb!.useTemporaryChats).toBe(useTemporaryChats);
+      }
+      saveConfig(loaded);
+      expect(loadConfig().useTemporaryChats).toBe(useTemporaryChats);
+      expect(JSON.parse(readFileSync(path, "utf8"))).not.toHaveProperty("useSavedChats");
+    }
+  }
+  writeFileSync(path, JSON.stringify({ ...original, useTemporaryChats: "true" }));
+  expect(() => loadConfig()).toThrow("useTemporaryChats");
 });
 
 test("composer predictions default on for existing configurations and persist an explicit opt-out", () => {

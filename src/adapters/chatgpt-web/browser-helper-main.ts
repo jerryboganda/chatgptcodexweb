@@ -17,6 +17,7 @@ interface RunMessage {
   config: {
     appName: string;
     browserHostDescriptorPath: string;
+    useTemporaryChats?: boolean;
     browserDiagnosticsPath?: string;
     turnTimeoutMs: number;
     autoApproveToolCalls: boolean;
@@ -44,6 +45,7 @@ interface VerifyMessage {
   config: {
     appName: string;
     browserHostDescriptorPath: string;
+    useTemporaryChats?: boolean;
   };
 }
 
@@ -195,6 +197,7 @@ async function run(message: RunMessage): Promise<void> {
       browserDiagnosticsPath: message.config.browserDiagnosticsPath,
       turnTimeoutMs: message.config.turnTimeoutMs,
       autoApproveToolCalls: message.config.autoApproveToolCalls,
+      useTemporaryChats: message.config.useTemporaryChats !== false,
     },
   };
   const abortController = new AbortController();
@@ -360,13 +363,14 @@ function maintenanceWorker(message: MaintenanceMessage): ChatGptBrowserWorker {
   }
   const appName = message.config.appName?.trim();
   const browserHostDescriptorPath = message.config.browserHostDescriptorPath?.trim();
-  if (!appName || appName.length > 80 || !browserHostDescriptorPath) {
+  if (!appName || appName.length > 80 || !browserHostDescriptorPath
+    || (message.config.useTemporaryChats !== undefined && typeof message.config.useTemporaryChats !== "boolean")) {
     throw new Error("Browser helper maintenance config is invalid");
   }
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: "https://chatgpt.com",
-    chatgptWeb: { appName, browserHost: "launcher", browserHostDescriptorPath },
+    chatgptWeb: { appName, browserHost: "launcher", browserHostDescriptorPath, useTemporaryChats: message.config.useTemporaryChats !== false },
   };
   return ChatGptBrowserWorker.forProvider(provider);
 }

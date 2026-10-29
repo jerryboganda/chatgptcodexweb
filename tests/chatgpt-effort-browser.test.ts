@@ -2,7 +2,9 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { chromium } from "playwright-core";
 import { ChatGptBrowserWorker, setChatGptThinkMode } from "../src/adapters/chatgpt-web/browser-worker";
-import { CHATGPT_COMPOSER_SELECTOR, detectChatGptAccountCapabilities } from "../src/chatgpt-session";
+import { CHATGPT_COMPOSER_SELECTOR } from "../src/chatgpt-ui/composer";
+import { CHATGPT_EFFORT_CONTROL_SELECTOR } from "../src/chatgpt-ui/model-picker";
+import { detectChatGptAccountCapabilities } from "../src/chatgpt-session";
 import { assertChatGptModelFamily } from "../src/adapters/chatgpt-web/model-selection";
 
 test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("GPT-5.6 Pro verifies the split model/effort header before Send (#875)", async () => {
@@ -294,3 +296,21 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("smoke uses Luna when the com
     expect(turns).toBe(1);
   } finally { await browser.close(); }
 }, 40_000);
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("the 2026-10-29 model picker trigger (Select ChatGPT model, no tone or test id) is found", async () => {
+  const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+  try {
+    const page = await browser.newPage();
+    // Attributes copied from the live ChatGPT composer.
+    await page.setContent(`<form><div contenteditable="true" role="textbox"></div>
+      <button type="button" aria-label="Add files and more" aria-haspopup="dialog">+</button>
+      <button type="button" aria-label="Select ChatGPT model" aria-haspopup="menu" aria-expanded="false" data-state="closed"
+        data-composer-navigation-target="reasoning" data-selected-reasoning-effort="max">Thinking effort 6 Extra High</button>
+      <button type="button" aria-label="Dictate">Dictate</button></form>`);
+    const controls = page.locator("form").locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
+    expect(await controls.count()).toBe(1);
+    expect(await controls.first().getAttribute("aria-label")).toBe("Select ChatGPT model");
+  } finally {
+    await browser.close();
+  }
+});

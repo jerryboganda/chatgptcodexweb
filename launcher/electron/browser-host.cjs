@@ -331,6 +331,7 @@ class BrowserHost {
     showWindow = () => {},
     clipboardApi = clipboard,
     getBrowserInteractionMode = () => "automatic",
+    getUseTemporaryChats = () => true,
   }) {
     if (typeof getConnectorName !== "function") {
       throw new Error("Browser host connector-name resolver is unavailable");
@@ -360,6 +361,7 @@ class BrowserHost {
     this.showWindow = showWindow;
     this.clipboard = clipboardApi;
     this.getBrowserInteractionMode = getBrowserInteractionMode;
+    this.getUseTemporaryChats = getUseTemporaryChats;
     this.runBrowserHelperOperation = runBrowserHelperOperation;
     this.verifyConnectorWithBrowserHelper = verifyConnectorWithBrowserHelper;
     this.surfaceId = randomBytes(24).toString("base64url");
@@ -428,7 +430,8 @@ class BrowserHost {
         backgroundThrottling: true,
       },
     });
-    window.contentView.addChildView(this.view);
+    // Browser surfaces stay below native launcher notices, including new tabs.
+    window.contentView.addChildView(this.view, 0);
     this.windowVisibilityListener = () => this.syncViewVisibility();
     for (const event of WINDOW_VISIBILITY_EVENTS) {
       this.window.on(event, this.windowVisibilityListener);
@@ -615,7 +618,7 @@ class BrowserHost {
     };
     this.turnTabs.set(id, tab);
     this.syncPowerSaveBlocker();
-    this.window.contentView.addChildView(view);
+    this.window.contentView.addChildView(view, 0);
     this.presentTurnView(tab, false);
     view.webContents.setZoomFactor(this.state.zoomFactor);
     this.bindShellZoomShortcuts(view.webContents);
@@ -689,7 +692,7 @@ class BrowserHost {
       ordinal,
       label: `ChatGPT ${ordinal}`,
       pageTitle: "ChatGPT",
-      url: NEW_CHAT_URL,
+      url: this.getUseTemporaryChats() ? `${NEW_CHAT_URL}?temporary-chat=true` : NEW_CHAT_URL,
       loading: true,
       message: "Paste the copied prompt, add any images yourself because Zero Risk cannot transfer them, choose a model and effort, then press Sent",
       interactionMode: "manual",
@@ -709,7 +712,7 @@ class BrowserHost {
       lastHeartbeatAt: Date.now(),
     };
     this.turnTabs.set(id, tab);
-    this.window.contentView.addChildView(view);
+    this.window.contentView.addChildView(view, 0);
     this.presentTurnView(tab, true);
     view.webContents.setZoomFactor(this.state.zoomFactor);
     this.bindShellZoomShortcuts(view.webContents);
@@ -1313,10 +1316,10 @@ class BrowserHost {
     });
   }
 
-  async refreshChatGptHomeDocument() {
+  async refreshChatGptHomeDocument(useTemporaryChats = false) {
     // A navigation from the idle host already creates a fresh ChatGPT document. Reload only an
-    // existing ordinary new-chat document so the helper sees one fresh catalog.
-    const targetUrl = NEW_CHAT_URL;
+    // existing new-chat document in the selected mode so the helper sees one fresh catalog.
+    const targetUrl = useTemporaryChats ? `${NEW_CHAT_URL}?temporary-chat=true` : NEW_CHAT_URL;
     if (this.view.webContents.getURL() === targetUrl) {
       await this.hardRefreshHome();
     } else {
@@ -1904,7 +1907,7 @@ class BrowserHost {
     const authView = new WebContentsView({ webContents: options.webContents });
     this.authView = authView;
     this.authNavigationError = null;
-    this.window.contentView.addChildView(authView);
+    this.window.contentView.addChildView(authView, 0);
     authView.setBounds(this.bounds);
     authView.setVisible(false);
     authView.webContents.setZoomFactor(this.state.zoomFactor);
@@ -2996,8 +2999,7 @@ class BrowserHost {
             url: actualUrl.href,
             composer: Boolean(composer),
             newChat: actualUrl.origin === expectedUrl.origin
-              && actualUrl.pathname === expectedUrl.pathname
-              && actualUrl.searchParams.get("temporary-chat") !== "true",
+              && actualUrl.pathname === expectedUrl.pathname,
             readyState: document.readyState,
           };
         };
@@ -3113,6 +3115,7 @@ class BrowserHost {
       descriptorPath: this.descriptorPath,
       appName: connectorName,
       operation: "smoke",
+      useTemporaryChats: this.getUseTemporaryChats(),
       logger: this.logger,
     });
     const evidence = result?.value;
@@ -3136,12 +3139,13 @@ class BrowserHost {
     requireAutomaticBrowserInspection(this, "ChatGPT connector verification");
     const connectorName = validateConnectorName(appName);
     this.setState({ status: "testing", message: "Checking ChatGPT connector" });
-    await this.refreshChatGptHomeDocument();
+    await this.refreshChatGptHomeDocument(this.getUseTemporaryChats());
     try {
       const result = await this.verifyConnectorWithBrowserHelper({
         helper: this.helper,
         descriptorPath: this.descriptorPath,
         appName: connectorName,
+        useTemporaryChats: this.getUseTemporaryChats(),
         logger: this.logger,
       });
       this.logger.info("connector.verified", { appName: connectorName });
@@ -3177,6 +3181,7 @@ class BrowserHost {
       descriptorPath: this.descriptorPath,
       appName: connectorName,
       operation: "inspect",
+      useTemporaryChats: false,
       payload: { detectCapabilities },
       logger: this.logger,
     });
@@ -3203,6 +3208,7 @@ class BrowserHost {
         descriptorPath: this.descriptorPath,
         appName: this.connectorName(),
         operation: "limits",
+        useTemporaryChats: false,
         logger: this.logger,
       });
       const plan = result?.value;

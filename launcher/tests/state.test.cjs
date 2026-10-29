@@ -10,14 +10,16 @@ const {
   validateSidebarState,
 } = require("../electron/state.cjs");
 
-test("prediction setting starts on and remains off after reopening the state store", () => {
+test("predictions and Temporary Chat start on and preserve an explicit opt-out after reopening", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-prediction-state-"));
   const file = path.join(root, "state.json");
   try {
     const store = createStateStore(file);
     assert.equal(store.read().composerPredictionsEnabled, true);
-    store.update({ composerPredictionsEnabled: false });
+    assert.equal(store.read().useTemporaryChats, true);
+    store.update({ composerPredictionsEnabled: false, useTemporaryChats: false });
     assert.equal(createStateStore(file).read().composerPredictionsEnabled, false);
+    assert.equal(createStateStore(file).read().useTemporaryChats, false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -34,6 +36,26 @@ test("retired saved-chat settings are discarded while other launcher settings su
       assert.deepEqual(store.read(), original);
       store.update({});
       assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), original);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("UTF-8 settings keep explicit choices with or without a byte order mark", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-utf8-state-"));
+  const file = path.join(root, "state.json");
+  try {
+    const expected = createStateStore(file).update({
+      coreSetupComplete: true,
+      autoStart: false,
+      useTemporaryChats: false,
+      browserInteractionMode: "manual",
+      browserSmokeVersion: "6.1.14\uFEFF-test",
+    });
+    for (const prefix of ["", "\uFEFF"]) {
+      const contents = prefix + JSON.stringify(expected);
+      fs.writeFileSync(file, contents);
+      assert.deepEqual(createStateStore(file).read(), expected);
+      assert.equal(fs.readFileSync(file, "utf8"), contents);
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
@@ -58,6 +80,7 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       composerPredictionsEnabled: true,
       experimentalSkillAttachments: false,
       experimentalFreshConversationPerTurn: false,
+      useTemporaryChats: true,
       zeroRiskProEnabled: false,
       browserSmokePassed: false,
       browserSmokeVersion: null,
@@ -88,6 +111,7 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       composerPredictionsEnabled: true,
       experimentalSkillAttachments: false,
       experimentalFreshConversationPerTurn: false,
+      useTemporaryChats: true,
       zeroRiskProEnabled: false,
       browserSmokePassed: true,
       browserSmokeVersion: "0.2.0",
@@ -169,6 +193,7 @@ test("persisted sidebar corruption is repaired without changing the rest of laun
       composerPredictionsEnabled: true,
       experimentalSkillAttachments: false,
       experimentalFreshConversationPerTurn: false,
+      useTemporaryChats: true,
       zeroRiskProEnabled: false,
       browserSmokePassed: false,
       browserSmokeVersion: null,
@@ -221,4 +246,35 @@ test("session refresh reminders are deferred by exactly 48 hours", () => {
   assert.equal(SESSION_REFRESH_REMINDER_INTERVAL_MS, 48 * 60 * 60 * 1000);
   assert.equal(nextSessionRefreshReminderAt(now), "2026-08-07T12:00:00.000Z");
   assert.throws(() => nextSessionRefreshReminderAt(Number.NaN), /must be finite/);
+});
+
+test("a state file that cannot be read once restores the last good copy instead of defaults", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-state-backup-"));
+  const file = path.join(root, "state.json");
+  try {
+    const store = createStateStore(file);
+    store.update({ onboardingComplete: true, language: "en", mcpSetupComplete: true, browserSmokePassed: true, browserSmokeVersion: "6.1.14" });
+    store.update({ sidebarWidth: 300 });
+    for (const damage of ["", "{ not json", JSON.stringify({ version: 2 })]) {
+      fs.writeFileSync(file, damage);
+      const restored = createStateStore(file).read();
+      assert.equal(restored.onboardingComplete, true);
+      assert.equal(restored.mcpSetupComplete, true);
+      assert.equal(restored.browserSmokeVersion, "6.1.14");
+    }
+    fs.rmSync(file);
+    assert.equal(createStateStore(file).read().onboardingComplete, true);
+    // The next update writes the recovered settings back, not defaults.
+    createStateStore(file).update({ sidebarWidth: 280 });
+    assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).onboardingComplete, true);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a fresh install without any saved state still starts from defaults", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-state-fresh-"));
+  try {
+    const store = createStateStore(path.join(root, "state.json"));
+    assert.equal(store.read().onboardingComplete, false);
+    assert.equal(fs.existsSync(path.join(root, "state.json.bak")), false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

@@ -24,7 +24,7 @@
   <a href="#get-started">开始使用</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases">更新内容</a> · <a href="docs/architecture.md">架构</a> · <a href="TROUBLESHOOTING.md">故障排除</a>
 </p>
 
-在 Codex 原生模型选择器中使用账户可用的 ChatGPT 网页版模型，包括 Pro。使用 ChatGPT 网页版的独立额度，不消耗 Work 或 Codex 额度。保留原有的界面、任务、图片和流式输出。
+在 Codex 原生模型选择器中使用账户可用的 ChatGPT 网页版模型，包括 Pro。消息通过已登录的 ChatGPT 网页会话发送，并受该账户适用的使用限制约束。保留原有的界面、任务、图片和流式输出。
 
 完整 harness 模式通过 MCP 将 ChatGPT 连接到当前任务的文件、终端、工具和审批流程。对话始终关联到你的 Codex 任务，上下文增长时也能继续工作。
 
@@ -146,7 +146,7 @@ codex-chatgpt-web subagents native
 启用完整模式前，请阅读完整的[架构说明](docs/architecture.md)和
 [安全模型](docs/security-model.md)。安全漏洞请通过 [SECURITY.md](SECURITY.md) 报告。
 
-任务始终使用普通聊天，对话会保留在 ChatGPT 历史记录中。提示词由 OpenAI 处理。
+任务默认使用“临时聊天”，不会保留在 ChatGPT 历史记录中。可在设置中关闭此选项以使用普通聊天；如果连接器不可用，也请关闭此选项。提示词仍由 OpenAI 处理。
 
 验证范围：[发布验证](docs/release-validation.md)。
 

@@ -121,10 +121,17 @@ export interface AppConfig {
   composerPredictionsEnabled: boolean;
   experimentalSkillAttachments: boolean;
   experimentalFreshConversationPerTurn: boolean;
+  useTemporaryChats: boolean;
   /** Explicitly install the additional Pro-sized model row while Zero Risk is active. */
   zeroRiskProEnabled: boolean;
   /** Optional adapter-silence budget for the Responses watchdog. */
   stallTimeoutSec?: number;
+  /**
+   * Minutes one stalled turn may spend waiting out a ChatGPT capacity or usage-limit notice before the
+   * failure is reported. Defaults to 120; 0 reports such failures at once. Overridden by the
+   * CODEX_CHATGPT_WEB_LIMIT_WAIT_MINUTES environment variable.
+   */
+  limitWaitMinutes?: number;
   autoApproveToolCalls: boolean;
   controlToken: string;
   runtimeCommand: string[];
@@ -254,6 +261,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     composerPredictionsEnabled: true,
     experimentalSkillAttachments: false,
     experimentalFreshConversationPerTurn: false,
+    useTemporaryChats: true,
     zeroRiskProEnabled: false,
     autoApproveToolCalls: false,
     controlToken: randomBytes(32).toString("base64url"),
@@ -544,10 +552,17 @@ function parseConfig(value: unknown, path: string): AppConfig {
     && (!Number.isFinite(parsed.stallTimeoutSec) || parsed.stallTimeoutSec <= 0)) {
     throw new Error(`Invalid stallTimeoutSec in ${path}`);
   }
+  if (parsed.limitWaitMinutes !== undefined
+    && (typeof parsed.limitWaitMinutes !== "number" || !Number.isFinite(parsed.limitWaitMinutes) || parsed.limitWaitMinutes < 0)) {
+    throw new Error(`Invalid limitWaitMinutes in ${path}`);
+  }
   const solAvailable = parsed.solAvailable !== false;
   const proAvailable = parsed.proAvailable === true;
   if (parsed.experimentalSkillAttachments !== undefined && typeof parsed.experimentalSkillAttachments !== "boolean") {
     throw new Error(`Invalid experimentalSkillAttachments in ${path}`);
+  }
+  if (parsed.useTemporaryChats !== undefined && typeof parsed.useTemporaryChats !== "boolean") {
+    throw new Error(`Invalid useTemporaryChats in ${path}`);
   }
   const experimentalSkillAttachments = parsed.experimentalSkillAttachments === true;
   if (parsed.composerPredictionsEnabled !== undefined && typeof parsed.composerPredictionsEnabled !== "boolean") {
@@ -586,6 +601,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     composerPredictionsEnabled,
     experimentalSkillAttachments,
     experimentalFreshConversationPerTurn,
+    useTemporaryChats: parsed.useTemporaryChats !== false,
     zeroRiskProEnabled,
   } as AppConfig;
 }
@@ -643,7 +659,9 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       experimentalBiggerContext: manual ? false : config.experimentalBiggerContext,
       experimentalSkillAttachments: manual ? false : config.experimentalSkillAttachments,
       experimentalFreshConversationPerTurn: !manual && config.experimentalFreshConversationPerTurn === true,
+      useTemporaryChats: config.useTemporaryChats,
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
+      ...(config.limitWaitMinutes !== undefined ? { limitWaitBudgetMs: Math.round(config.limitWaitMinutes * 60_000) } : {}),
       autoApproveToolCalls: manual ? false : config.autoApproveToolCalls,
     },
   };

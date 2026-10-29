@@ -24,7 +24,7 @@
   <a href="#get-started">Get started</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases">What’s new</a> · <a href="docs/architecture.md">Architecture</a> · <a href="TROUBLESHOOTING.md">Troubleshooting</a>
 </p>
 
-Use the ChatGPT Web models available on your account, including Pro, from Codex’s native model picker—with ChatGPT Web’s separate usage limits, without spending your Work or Codex quota. Keep the same interface, tasks, images, and streaming.
+Use the ChatGPT Web models available on your account, including Pro, from Codex’s native model picker. Messages run through your signed-in ChatGPT Web session and are subject to the limits applied to that account. Keep the same interface, tasks, images, and streaming.
 
 Full harness mode connects ChatGPT to the current task’s files, terminal, tools, and approvals through MCP. Conversations stay tied to your Codex task, so you can keep working as the context grows.
 
@@ -123,9 +123,10 @@ that option clicks **Allow once**, never a permanent grant.
 
 Use **Activity** for safe local diagnostics and **Settings → Run doctor** for end-to-end health.
 Settings can also cancel a retained browser turn or remove the Codex integration before uninstall.
-Task conversations always use ordinary chats and remain in ChatGPT history. ChatGPT memory and
-custom instructions may apply. **New browser chat for each turn** separately controls conversation
-reuse. The retired saved-chat preference is discarded when loading an older configuration.
+**Settings → Temporary Chat** is on by default and keeps new task conversations out of ChatGPT
+history. Turn it off to use ordinary saved chats or if your connector is unavailable in that mode.
+ChatGPT memory and custom instructions may apply in either mode. **New browser chat for each turn**
+separately controls conversation reuse. An explicit choice to disable Temporary Chat is preserved when updating.
 Set `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` only when every browser checkpoint needs a screenshot.
 
 New installs use **Compatibility V1** for cross-backend subagents. **Native** preserves Codex's own

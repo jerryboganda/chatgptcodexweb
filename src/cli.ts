@@ -30,6 +30,7 @@ import { installRuntimeKeyBytes, managedRuntimeKeyPath, stopTunnel, tunnelStatus
 import { getTunnelServiceStatus, restartTunnelService, startTunnelService, stopTunnelService, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
 import { runDevCommand } from "./dev-chat/cli";
+import { longrunCommand, runLongrunHook, syncLongrunHooks, workerCommand } from "./longrun/cli";
 
 const HELP = `codex-chatgpt-web ${VERSION}
 
@@ -80,12 +81,19 @@ Setup options:
   --bigger-context             Enable experimental adaptive 1/2/6-message context
   --fresh-conversation         Start each automatic turn in a fresh browser chat
   --retained-conversation      Reuse the browser chat between turns (default)
+  --temporary-chats            Use Temporary Chat for new task conversations (default)
+  --ordinary-chats             Keep new task conversations in ChatGPT history
   --composer-predictions       Enable next-message suggestions using GPT-6 Sol Medium (default)
   --no-composer-predictions    Disable next-message suggestions for Web models
   --skill-attachments         Experimental selected skills as text attachments
   --inline-skills             Keep selected skills inline (default)
   --standard-context           Disable experimental multi-message context
   --acknowledge-unofficial     Accept the one-time unofficial-browser-automation notice
+
+Long-run (keep a ChatGPT web task going until its check passes):
+  longrun [status|on|off|install|uninstall|worker <effort>|driver on|off]
+  worker run [--brief-file <file>] [--effort <effort>]   run one job on the ChatGPT web worker (used by a Luna driver)
+                               Automatic mode is on by default; see docs/long-horizon.md
 
 Global:
   --home PATH                  Override ~/.codex-chatgpt-web
@@ -315,6 +323,10 @@ async function setupCommand(args: string[]): Promise<void> {
   const skillAttachments = takeFlag(args, "--skill-attachments");
   const inlineSkills = takeFlag(args, "--inline-skills");
   if (skillAttachments && inlineSkills) throw new Error("Choose --skill-attachments or --inline-skills");
+  const temporaryChats = takeFlag(args, "--temporary-chats");
+  const ordinaryChats = takeFlag(args, "--ordinary-chats");
+  if (temporaryChats && ordinaryChats) throw new Error("Choose --temporary-chats or --ordinary-chats");
+  if (temporaryChats || ordinaryChats) options.useTemporaryChats = temporaryChats;
   const freshConversation = takeFlag(args, "--fresh-conversation");
   const retainedConversation = takeFlag(args, "--retained-conversation");
   if (freshConversation && retainedConversation) {
@@ -563,6 +575,7 @@ async function uninstallCommand(args: string[]): Promise<void> {
     stopTunnel(config);
   }
   if (config && process.platform === "darwin" && !launcherRuntimeStopped) await uninstallService(config);
+  try { await longrunCommand(["uninstall"]); } catch { /* A long-run cleanup problem must not block the uninstall. */ }
   uninstallCodexIntegration();
   if (!keepData) rmSync(getConfigDir(), { recursive: true, force: true });
   stdout.write(keepData ? "Uninstalled; private application data was preserved.\n" : "Uninstalled and removed private application data.\n");
@@ -611,6 +624,8 @@ async function main(): Promise<void> {
     assertNoArgs(args);
     const config = loadConfig();
     const server = startServer(config);
+    // Keep the long-run hooks in Codex current (a new runtime version has a new command path).
+    syncLongrunHooks(config);
     stdout.write(`codex-chatgpt-web ${VERSION} listening on http://${config.host}:${server.port}/v1 (${config.mode})\n`);
     await new Promise<void>(() => {});
   } else if (command === "dev") await runDevCommand(args);
@@ -618,9 +633,14 @@ async function main(): Promise<void> {
   else if (command === "service") await serviceCommand(args);
   else if (command === "hook") {
     const action = args.shift();
-    if (action !== "interrupt") throw new Error("Hook command must be: hook interrupt");
-    await interruptHookCommand(args);
+    if (action === "stop" || action === "prompt") {
+      assertNoArgs(args);
+      await runLongrunHook(action);
+    } else if (action === "interrupt") await interruptHookCommand(args);
+    else throw new Error("Hook command must be: hook interrupt | hook stop | hook prompt");
   }
+  else if (command === "longrun") await longrunCommand(args);
+  else if (command === "worker") await workerCommand(args);
   else if (command === "tunnel") await tunnelCommand(args);
   else if (command === "open") await openCommand(args);
   else if (command === "uninstall") await uninstallCommand(args);
