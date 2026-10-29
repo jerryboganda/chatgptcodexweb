@@ -1,5 +1,54 @@
 # Long-horizon runs
 
+## Automatic mode: just use Codex
+
+Pick a ChatGPT web model in Codex (the desktop app or the CLI) and work as usual. The bridge keeps Codex's
+config current with two small hooks, so a task keeps going until its check passes:
+
+1. You send a request. The app remembers what the project looked like.
+2. The model works and stops. If it changed files, the project's **acceptance command** runs.
+3. If the command fails, Codex is sent back to work in the same chat with the output, instead of stopping.
+   This repeats until the command passes or a limit is hit.
+4. If the command passes, the turn ends normally.
+
+A turn that did not change any file (a question, an explanation) is never touched, and neither is a turn whose
+last words are a question to you. Models other than `chatgpt-web/*`, subagents and projects that switched it off
+are left alone. Nothing needs to be started and nothing is shown to configure.
+
+**Where the acceptance command comes from** (first match wins, nearest folder first):
+
+| Source | Example |
+| --- | --- |
+| `.codex/longrun.json` | `{ "acceptance": "npm test", "maxContinuations": 20 }` |
+| a line in `AGENTS.md` | `acceptance: npm test` |
+| the project's test runner | `npm test` (a real test script), `python -m pytest -q`, `cargo test`, `go test ./...`, `dotnet test`, `make test` |
+
+Without any of these the hooks stay quiet, and Codex shows a one-time note on how to add the line.
+
+**Limits** (per request; a new message from you starts a new budget): 40 automatic continuations, 20 hours, the
+acceptance command is stopped after 30 minutes, and the loop ends early when the same failure comes back 5 times with
+no change to the project. Change them in `~/.codex-chatgpt-web/longrun.json` (`maxContinuations`, `maxHours`,
+`sameFailureLimit`, `acceptanceTimeoutMinutes`) or per project.
+
+**Control it from a terminal** (`codex-chatgpt-web` is the installed runtime command):
+
+```bash
+codex-chatgpt-web longrun status     # on/off, whether Codex has the hooks, which command checks this folder
+codex-chatgpt-web longrun off        # stop continuing on its own (removes the hooks)
+codex-chatgpt-web longrun on         # turn it back on
+```
+
+Other switches: set `CODEX_LONGRUN=off` in the environment, create an empty `.longrun/off` file in a project, or put
+`"enabled": false` in `.codex/longrun.json`.
+
+**Safety.** The hooks fail open: any error means Codex behaves as if they were not installed. They only edit their own
+marked block of `config.toml` (a backup of the file from before the first change is kept in
+`~/.codex-chatgpt-web/longrun/`), and the block is removed by `longrun off` and by uninstalling the integration.
+Decisions are logged without prompts or command output in `~/.codex-chatgpt-web/longrun/hook.log`. Start a new Codex
+chat after the first install so Codex loads the hooks.
+
+The rest of this page describes the **unattended supervisor**, a separate script for jobs you start yourself.
+
 `scripts/longrun/longrun.mjs` drives a Codex task for hours without you. The coding itself runs through
 the bridge on your **ChatGPT web quota** (a `chatgpt-web/*` model). A small **controller** model supervises it.
 The controller is a native model, so its few short calls use the **Codex quota**; it defaults to

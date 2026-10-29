@@ -5,6 +5,7 @@ import { runAcceptance as runAcceptanceCommand, type AcceptanceResult } from "./
 import { workTreeFingerprint } from "./fingerprint";
 import { resolveProject, type ProjectPlan } from "./project";
 import { loadLongrunSettings, longrunDirectory, type LongrunSettings } from "./settings";
+import { mayRunProjectCommands } from "./trust";
 import { freshState, loadState, pruneStates, saveState, validSessionId, type LongrunSessionState } from "./state";
 
 /** Marks the feedback this feature injects, so the prompt hook can tell it from a person's message. */
@@ -16,6 +17,7 @@ export interface StopHookInput {
   model?: unknown;
   agent_id?: unknown;
   stop_hook_active?: unknown;
+  permission_mode?: unknown;
   last_assistant_message?: unknown;
 }
 
@@ -39,6 +41,8 @@ export interface HookDeps {
   settings: () => LongrunSettings;
   project: (cwd: string) => ProjectPlan;
   fingerprint: (cwd: string) => string;
+  /** May project commands run here? (a folder trusted in Codex, or a session that already runs without approvals) */
+  mayRun: (cwd: string, permissionMode: unknown) => boolean;
   acceptance: (command: string, cwd: string, options: { timeoutMs: number; tailChars: number }) => Promise<AcceptanceResult>;
   log: (event: string, detail?: Record<string, unknown>) => void;
 }
@@ -50,6 +54,7 @@ export function defaultDeps(home = getConfigDir()): HookDeps {
     settings: () => loadLongrunSettings(home),
     project: resolveProject,
     fingerprint: workTreeFingerprint,
+    mayRun: (cwd, permissionMode) => mayRunProjectCommands(cwd, permissionMode),
     acceptance: runAcceptanceCommand,
     log: (event, detail) => appendLog(home, event, detail),
   };
@@ -162,6 +167,15 @@ export async function handleStop(input: StopHookInput, deps: HookDeps): Promise<
     deps.log("no_acceptance", { session: sessionId, root: plan.root });
     return {
       systemMessage: `${LONGRUN_MARK} I cannot tell when this task is done, so I will not keep going on my own. Add a line such as "acceptance: npm test" to AGENTS.md in the project and I will continue until that command passes.`,
+    };
+  }
+
+  if (!deps.mayRun(cwd, input.permission_mode)) {
+    deps.log("untrusted_project", { session: sessionId });
+    if (state.hintShown) return undefined;
+    saveState({ ...state, hintShown: true }, deps.home);
+    return {
+      systemMessage: `${LONGRUN_MARK} This folder is not trusted in Codex, so I will not run its acceptance command (${plan.acceptance.command}) on my own. Trust the folder in Codex and I will keep going until it passes.`,
     };
   }
 

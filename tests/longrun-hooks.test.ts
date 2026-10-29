@@ -9,6 +9,7 @@ import { LONGRUN_MARK, endsWithQuestion, handlePrompt, handleStop, type HookDeps
 import { parseAcceptanceLine, resolveProject } from "../src/longrun/project";
 import { DEFAULT_LONGRUN_SETTINGS, loadLongrunSettings, normalizeSettings, saveLongrunSettings } from "../src/longrun/settings";
 import { loadState, saveState, freshState } from "../src/longrun/state";
+import { insideTrustedProject, mayRunProjectCommands, trustedProjects } from "../src/longrun/trust";
 
 const cleanup: string[] = [];
 afterEach(() => { for (const path of cleanup.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -33,6 +34,7 @@ function fakeDeps(over: Partial<HookDeps> & { fingerprints?: string[]; results?:
     settings: () => normalizeSettings({}),
     project: () => ({ enabled: true, root: "C:/p", acceptance: { command: "npm test", source: "package.json" } }),
     fingerprint: () => fingerprints.shift() ?? "fp-same",
+    mayRun: () => true,
     acceptance: async () => {
       calls.acceptance += 1;
       const next = results.shift() ?? { ok: true };
@@ -370,3 +372,39 @@ test("the hook command fails open on garbage and prints a block decision for fai
   expect(output.reason).toContain("NOT YET");
   expect(readFileSync(join(home, "longrun", "hook.log"), "utf8")).toContain('"event":"continue"');
 }, 120_000);
+
+// ---- trust
+
+test("project commands only run in folders Codex trusts, or when the session already runs without approvals", () => {
+  const dir = temp();
+  const config = join(dir, "config.toml");
+  const bs = String.fromCharCode(92);
+  const win = (path: string) => path.replaceAll("/", bs);
+  writeFileSync(config, [
+    `[projects.'${win("C:/Work/trusted")}']`, 'trust_level = "trusted"', "",
+    `[projects.'${win("C:/Work/other")}']`, 'trust_level = "untrusted"', "",
+    `[projects.'${bs}${bs}?${bs}${win("C:/Work/verbatim")}']`, 'trust_level = "trusted"', "",
+  ].join(String.fromCharCode(10)));
+  const trusted = trustedProjects(config);
+  expect(trusted).toHaveLength(2);
+  expect(insideTrustedProject(win("C:/Work/trusted"), trusted)).toBe(true);
+  expect(insideTrustedProject(win("C:/Work/trusted/packages/app"), trusted)).toBe(true);
+  expect(insideTrustedProject(win("C:/Work/Verbatim/x"), trusted)).toBe(true);
+  expect(insideTrustedProject(win("C:/Work/other"), trusted)).toBe(false);
+  expect(insideTrustedProject(win("C:/Work/trusted-but-not"), trusted)).toBe(false);
+  expect(mayRunProjectCommands(win("C:/Elsewhere"), "default", config)).toBe(false);
+  expect(mayRunProjectCommands(win("C:/Elsewhere"), "bypassPermissions", config)).toBe(true);
+  expect(mayRunProjectCommands(win("C:/Work/trusted"), "default", config)).toBe(true);
+  expect(trustedProjects(join(dir, "missing.toml"))).toEqual([]);
+  writeFileSync(config, "not = = toml");
+  expect(trustedProjects(config)).toEqual([]);
+});
+
+test("an untrusted folder gets one explanation and its acceptance command is not run", async () => {
+  const { deps, calls } = fakeDeps({ mayRun: () => false, fingerprints: ["base", "edited", "edited2"] });
+  handlePrompt(prompt("go"), deps);
+  const first = await handleStop(stop(), deps);
+  expect(first).toMatchObject({ systemMessage: expect.stringContaining("not trusted in Codex") });
+  expect(await handleStop(stop(), deps)).toBeUndefined();
+  expect(calls.acceptance).toBe(0);
+});
