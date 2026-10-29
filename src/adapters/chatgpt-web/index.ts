@@ -26,7 +26,13 @@ import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGpt
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
 import { createChatGptStructuredOutputValidator } from "./output-validation";
-import { chatGptWebTurnRetryPolicy } from "./retry-policy";
+import { chatGptLimitGiveUpError, chatGptWebTurnRetryPolicy } from "./retry-policy";
+import {
+  abortableDelay,
+  chatGptLimitKindOfError,
+  chatGptRetryAfterMsOfError,
+  resolveLimitWaitBudgetMs,
+} from "./limit-wait";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnRoundKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
 import { estimateChatGptWebUsage, resolveBiggerContextMultipartParts } from "./usage";
@@ -68,6 +74,17 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
 function abortError(signal?: AbortSignal): Error {
   if (signal?.reason instanceof ChatGptWebAdapterError) return signal.reason;
   return new DOMException("ChatGPT web turn aborted", "AbortError");
+}
+
+/**
+ * Internal control flow, never surfaced: a capacity or usage-limit failure was retired and its wait
+ * scheduled in the retry policy, so the turn runs again in a new session once the wait has elapsed.
+ */
+class ChatGptLimitWaitRetry extends Error {
+  constructor() {
+    super("ChatGPT limit wait scheduled");
+    this.name = "ChatGptLimitWaitRetry";
+  }
 }
 
 class ChatGptObserverDisconnected extends DOMException {
@@ -357,6 +374,7 @@ export function createChatGptWebAdapter(
   const zeroRiskManualControl = dependencies.zeroRiskManualControl ?? launcherZeroRiskManualControl;
   const structuredBroker = broker instanceof TurnBroker ? broker : undefined;
   const timeoutMs = provider.chatgptWeb?.turnTimeoutMs;
+  const limitWaitBudgetMs = resolveLimitWaitBudgetMs(provider.chatgptWeb?.limitWaitBudgetMs);
   const experimentalSkillAttachments = provider.chatgptWeb?.experimentalSkillAttachments;
   if (experimentalSkillAttachments !== undefined && typeof experimentalSkillAttachments !== "boolean") {
     throw new Error("ChatGPT skill attachments preference must be a boolean");
@@ -851,6 +869,40 @@ export function createChatGptWebAdapter(
           ? AbortSignal.any([incoming.abortSignal, observerAbort.signal])
           : observerAbort.signal,
       };
+      // Whether anything other than keep-alives has reached this response stream. An internal retry
+      // rebuilds the turn from scratch, so it is only allowed while the stream is still clean.
+      let deliveredContent = false;
+      let announcing = false;
+      let contextWarningDelivered = false;
+      /**
+       * Schedule the wait for a capacity or usage-limit failure, or return the final, explained failure
+       * when the budget, the stated time or the hourly ceiling rules a wait out. The caller retires
+       * whatever failed and rebuilds the turn from the canonical history once the wait has elapsed.
+       */
+      const waitOutLimit = (
+        failure: ChatGptWebAdapterError,
+        kind: NonNullable<ReturnType<typeof chatGptLimitKindOfError>>,
+        retryKey: string,
+        traceId: string,
+      ): "wait" | ChatGptWebAdapterError => {
+        const retryAfterMs = chatGptRetryAfterMsOfError(failure);
+        const plan = chatGptWebTurnRetryPolicy.planLimitWait(retryKey, {
+          kind,
+          budgetMs: limitWaitBudgetMs,
+          ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+        });
+        if (plan.type === "wait") {
+          console.warn(`[chatgpt-web] limit_wait ${JSON.stringify({
+            traceId, kind, delayMs: plan.delayMs, waitedMs: plan.waitedMs, attempt: plan.attempt,
+            retriesInLastHour: chatGptWebTurnRetryPolicy.retriesInLastHour(),
+          })}`);
+          return "wait";
+        }
+        console.warn(`[chatgpt-web] limit_wait_gave_up ${JSON.stringify({
+          traceId, kind, reason: plan.reason, waitedMs: plan.waitedMs, attempts: plan.attempt,
+        })}`);
+        return chatGptLimitGiveUpError(failure, plan, limitWaitBudgetMs);
+      };
       const write = emit;
       emit = event => {
         if (observerAbort.signal.aborted) throw observerAbort.signal.reason;
@@ -862,6 +914,7 @@ export function createChatGptWebAdapter(
           observerAbort.abort(error);
           throw error;
         }
+        if (event.type !== "heartbeat" && !announcing) deliveredContent = true;
       };
       const runChatGptWebTurn = async (): Promise<void> => {
         const manualRequest = isChatGptWebZeroRiskBackendModel(parsed.modelId);
@@ -900,6 +953,14 @@ export function createChatGptWebAdapter(
             retryable: false,
           });
           return;
+        }
+        // A capacity or usage-limit wait is held per native turn, so a reconnect of the same turn
+        // cannot start another browser attempt before the wait has elapsed. The adapter heartbeat
+        // keeps this response alive for the whole wait.
+        const heldBackMs = chatGptWebTurnRetryPolicy.waitRemainingMs(retryKey);
+        if (heldBackMs > 0) {
+          console.info(`[chatgpt-web] limit_wait_holding ${JSON.stringify({ remainingMs: Math.round(heldBackMs) })}`);
+          await abortableDelay(heldBackMs, incoming.abortSignal, abortError);
         }
         let environment: ReturnType<typeof extractChatGptTurnEnvironment> | undefined;
         if (mode.localTools) {
@@ -966,7 +1027,8 @@ export function createChatGptWebAdapter(
                     timeoutMs ?? MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
                     MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
                   );
-                  const handoffDeadline = new AbortController();
+                  // Replaced after a timeout so the fresh-chat fallback gets its own full budget.
+                  let handoffDeadline = new AbortController();
                   const handoffTimeoutError = new ChatGptWebAdapterError(
                     `ChatGPT compaction had no observed activity for ${handoffTimeoutMs}ms`,
                     {
@@ -1016,7 +1078,7 @@ export function createChatGptWebAdapter(
                     handoffTimer.unref?.();
                   };
                   armHandoffDeadline();
-                  const operationSignal = AbortSignal.any([operatorSignal, handoffDeadline.signal]);
+                  let operationSignal = AbortSignal.any([operatorSignal, handoffDeadline.signal]);
                   const sourceConversationKey = chatGptConversationKey(parsed, executionNamespace);
                   const runFreshCompaction = async (reason: string): Promise<string> => {
                     handoffPhase = "fresh_compaction";
@@ -1194,6 +1256,17 @@ export function createChatGptWebAdapter(
                       if (handoffError.code === "compaction_handoff_blocked") {
                         return await runFreshCompaction("handoff_blocked_by_chatgpt_safety");
                       }
+                      if (handoffError.code === "compaction_handoff_timeout"
+                        && handoffPhase !== "fresh_compaction"
+                        && !operatorSignal.aborted) {
+                        // The retained chat produced no checkpoint within its liveness budget. It has just been
+                        // retired above, and the complete canonical history still exists, so summarize it in a
+                        // fresh chat with a new budget rather than failing /responses/compact. A timeout of the
+                        // fresh summarizer itself is never retried a second time.
+                        handoffDeadline = new AbortController();
+                        operationSignal = AbortSignal.any([operatorSignal, handoffDeadline.signal]);
+                        return await runFreshCompaction("handoff_timeout");
+                      }
                     }
                     throw handoffError;
                   } finally {
@@ -1217,7 +1290,17 @@ export function createChatGptWebAdapter(
               }
               const handoffError = error instanceof Error ? error : new Error(String(error));
               console.error("[chatgpt-web] structured context handoff failed:", handoffError);
-              const upstreamError = handoffError instanceof ChatGptWebAdapterError ? handoffError : undefined;
+              let upstreamError = handoffError instanceof ChatGptWebAdapterError ? handoffError : undefined;
+              const limitKind = chatGptLimitKindOfError(upstreamError);
+              if (upstreamError && limitKind
+                && limitWaitBudgetMs > 0 && !deliveredContent && !manualRequest && !incoming.abortSignal?.aborted) {
+                // The summarizer chat was refused for capacity or a usage limit. Its run has already been
+                // evicted, so after the wait the compaction starts again and, with the source retired,
+                // summarizes the complete canonical history in a fresh chat.
+                const outcome = waitOutLimit(upstreamError, limitKind, retryKey, compactionTraceId);
+                if (outcome === "wait") throw new ChatGptLimitWaitRetry();
+                upstreamError = outcome;
+              }
               emit({
                 type: "error",
                 message: upstreamError?.message ?? `ChatGPT did not complete the context handoff: ${handoffError.message}`,
@@ -1283,6 +1366,19 @@ export function createChatGptWebAdapter(
           emitRoundEvents(events);
         };
         const emitRoundEvent = (event: AdapterEvent): void => emitRoundEvents([event]);
+        const emitContextWarning = (): void => {
+          const events: AdapterEvent[] = [];
+          emitReadOnlyContextWarning(parsed, turnCapabilities, event => events.push(event));
+          if (events.length === 0) return;
+          session.appendRoundEvents(roundKey, events);
+          // An internal retry rebuilds the turn in a new session. The notice is journaled again so a
+          // reconnect replays it, but one live stream never shows the same notice twice.
+          if (contextWarningDelivered) return;
+          contextWarningDelivered = true;
+          announcing = true;
+          try { for (const event of events) emit(event); }
+          finally { announcing = false; }
+        };
         let awaitingRuntime = false;
         try {
           await session.runExclusive(async () => {
@@ -1312,9 +1408,7 @@ export function createChatGptWebAdapter(
                 emitRoundEvents(finalReplay);
               } else {
                 session.appendRoundReasoning(roundKey, trace.map(event => event.text));
-                if (replay.length === 0 && !parsed._compactionRequest) {
-                  emitRoundBatch(buffer => emitReadOnlyContextWarning(parsed, turnCapabilities, buffer));
-                }
+                if (replay.length === 0 && !parsed._compactionRequest) emitContextWarning();
                 emitRoundBatch(buffer => emitTraceEvents(trace, buffer));
                 if (!bufferStructuredOutput) {
                   emitRoundBatch(buffer => emitTextDeltas(completedTextDeltas, buffer));
@@ -1369,6 +1463,9 @@ export function createChatGptWebAdapter(
                   session.runtime.trace.recordProgress();
                   session.markResultDelivered(message.toolCallId);
                 }
+                // A delivered tool round is real progress: earlier ChatGPT failures and waits no longer
+                // count against this native turn (the per-hour ceiling still does).
+                chatGptWebTurnRetryPolicy.recordProgress(retryKey);
               }
             } else if (session.outstanding().length > 0) {
               throw new Error("Read-only ChatGPT Web runtime cannot own local tool calls");
@@ -1385,9 +1482,7 @@ export function createChatGptWebAdapter(
               const emitNewText = (deltas: string[]) => {
                 if (!bufferStructuredOutput) emitRoundBatch(buffer => emitTextDeltas(deltas, buffer));
               };
-              if (replay.length === 0 && !parsed._compactionRequest) {
-                emitRoundBatch(buffer => emitReadOnlyContextWarning(parsed, turnCapabilities, buffer));
-              }
+              if (replay.length === 0 && !parsed._compactionRequest) emitContextWarning();
               emitNewTrace(session.runtime.trace.drain());
               emitNewText(session.runtime.text.drain());
               const externalProgress = session.runtime.mode === "tools"
@@ -1528,7 +1623,39 @@ export function createChatGptWebAdapter(
           // Validation and result-delivery failures never enter this branch.
           const settled = awaitingRuntime ? session.settledOutcome() : undefined;
           if (settled?.type === "error") error = settled.error;
-          const turnError = submittedTurnFailure(session, error);
+          let turnError = submittedTurnFailure(session, error);
+          const limitKind = chatGptLimitKindOfError(turnError);
+          if (limitKind && turnError instanceof ChatGptWebAdapterError) {
+            // ChatGPT refused the message because the model is at capacity or the account hit a usage
+            // limit. Waiting it out is safe only while this response stream is still clean (an internal
+            // retry rebuilds the turn from scratch) and the turn is automatic; the retry always goes to a
+            // new chat that carries the complete canonical history, and this chat's response is discarded.
+            const waitable = limitWaitBudgetMs > 0
+              && !deliveredContent
+              && !session.runtime.manualControl
+              && !incoming.abortSignal?.aborted;
+            if (waitable) {
+              const outcome = waitOutLimit(turnError, limitKind, retryKey, traceId);
+              if (outcome === "wait") {
+                chatGptTurnSessions.retire(executionKey, session);
+                if (session.runtime.mode === "tools") {
+                  void session.runtime.token.then(turnToken => broker.revoke(turnToken)).catch(() => {});
+                }
+                throw new ChatGptLimitWaitRetry();
+              }
+              turnError = outcome;
+            } else {
+              // Not waited out here (waiting is disabled, the stream already carries output, or the turn
+              // is manual): keep the behaviour of any other ChatGPT response error, which Codex may retry
+              // in a new chat within the normal per-turn budget.
+              turnError = new ChatGptWebAdapterError(turnError.message, {
+                status: turnError.status,
+                errorType: turnError.errorType,
+                code: turnError.code,
+                retryable: true,
+              });
+            }
+          }
           const handledError = turnError instanceof ChatGptWebAdapterError && turnError.retryable
             ? chatGptWebTurnRetryPolicy.recordRetryableFailure(retryKey, turnError)
             : turnError;
@@ -1575,7 +1702,15 @@ export function createChatGptWebAdapter(
       );
       try {
         emit({ type: "heartbeat" });
-        await runChatGptWebTurn();
+        for (;;) {
+          try {
+            await runChatGptWebTurn();
+            return;
+          } catch (error) {
+            // The wait itself is held at the start of the next run, so a reconnect shares it.
+            if (!(error instanceof ChatGptLimitWaitRetry)) throw error;
+          }
+        }
       } finally {
         clearInterval(heartbeat);
       }

@@ -655,6 +655,41 @@ test("retained compaction deadline bounds browser settlement after the control h
   expect(transactionAborted).toBeTrue();
 });
 
+test("the retained handoff deadline is a typed compaction timeout that the adapter can fall back from", async () => {
+  const sourceRequest = request(false);
+  const source = new ChatGptTurnSession({
+    mode: "read-only",
+    browser: Promise.resolve("source complete"),
+    physicalSettlement: Promise.resolve(),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    usageInput: sourceRequest,
+    conversationKey: chatGptConversationKey(sourceRequest, "provider")!,
+    cancel() {},
+  });
+  const broker = {
+    beginCompactionTransaction: async () => ({
+      token: "turn_11111111111111111111111111111111",
+      handoffId: "handoff_22222222222222222222222222222222",
+    }),
+    waitForCompactionHandoff: () => new Promise<string>(() => {}),
+    abortCompactionTransaction: () => {},
+  } as unknown as TurnBroker;
+  const failure = await requestRetainedCompactionHandoff(
+    { appName: "Codex app", run: async () => new Promise<string>(() => {}) } as never,
+    request(true),
+    source,
+    broker,
+    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    "trace_typed_deadline",
+    undefined,
+    25,
+  ).then(() => undefined, error => error);
+  expect(failure).toBeInstanceOf(ChatGptWebAdapterError);
+  expect(failure).toMatchObject({ code: "compaction_handoff_timeout", status: 409, retryable: false });
+  expect((failure as Error).message).toContain("timed out after 25ms");
+});
+
 test("a rejected exact compaction run is evicted while a successful run remains replayable", async () => {
   const key = `exact-retry-${Date.now()}-${Math.random()}`;
   const owner = { ownerKey: `owner-${key}`, traceIds: [`trace-${key}`] };
@@ -2005,6 +2040,70 @@ test("a disappeared retained source cannot leave its fresh compaction rebuild pa
   }
 });
 
+test("a retained checkpoint that never arrives falls back to a fresh summary instead of failing compaction", async () => {
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-retained-timeout-fallback-"));
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://retained-timeout-fallback-${Date.now()}`,
+    chatgptWeb: {
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(root, "launcher.json"),
+      brokerSocketPath: defaultBrokerEndpoint(root),
+      localToolsEnabled: true,
+      solAvailable: true,
+      extraHighAvailable: true, proAvailable: true,
+      turnTimeoutMs: 25,
+    },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  const sourceRequest = request(false);
+  const namespace = chatGptWebExecutionNamespace(provider);
+  const sourceKey = `${namespace}:${chatGptTurnExecutionKey(sourceRequest)}`;
+  chatGptTurnSessions.getOrCreate(sourceKey, () => ({
+    mode: "read-only",
+    browser: Promise.resolve("source complete"),
+    physicalSettlement: Promise.resolve(),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    usageInput: sourceRequest,
+    conversationKey: chatGptConversationKey(sourceRequest, namespace)!,
+    cancel() {},
+  }));
+  await chatGptTurnSessions.find(sourceKey)!.browserOutcome;
+  const broker = TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!);
+  await broker.listen();
+  let retainedStarts = 0;
+  let freshStarts = 0;
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    if (turn.requireRetainedConversation) {
+      retainedStarts += 1;
+      return new Promise<string>(() => {});
+    }
+    freshStarts += 1;
+    return "Fresh summary after the retained checkpoint timed out";
+  };
+  const events: AdapterEvent[] = [];
+  try {
+    await createChatGptWebAdapter(provider).runTurn!(
+      request(true),
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+    expect(retainedStarts).toBe(1);
+    expect(freshStarts).toBe(1);
+    expect(events.some(event => event.type === "error")).toBeFalse();
+    expect(events.some(event => event.type === "text_delta"
+      && event.text.includes("Fresh summary after the retained checkpoint timed out"))).toBeTrue();
+    expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    chatGptTurnSessions.clear();
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("finishing the previous response does not consume the retained checkpoint's time budget", async () => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-retained-phases-"));
   const provider: CodexProviderConfig = {
@@ -2062,7 +2161,7 @@ test("finishing the previous response does not consume the retained checkpoint's
   }
 });
 
-test.each([false, true])("compaction source progress renews waiting, but silent source still expires (%s)", async live => {
+test.each([false, true])("compaction source progress renews waiting, but a silent source expires into a fresh checkpoint (%s)", async live => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-retained-progress-"));
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web", baseUrl: `browser://retained-phases-${root}`,
@@ -2084,7 +2183,13 @@ test.each([false, true])("compaction source progress renews waiting, but silent 
   const originalRun = worker.run;
   const broker = TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!);
   await broker.listen();
+  let freshFallbacks = 0;
   worker.run = async turn => {
+    if (!turn.prepareResume) {
+      // No retained conversation: this is the fresh-chat summary that replaces a silent source.
+      freshFallbacks += 1;
+      return "Fresh checkpoint after the silent source expired";
+    }
     mock.timers.tick(25);
     expect(turn.abortSignal?.aborted).toBeFalse();
     const prepared = await turn.prepareResume!();
@@ -2113,9 +2218,16 @@ test.each([false, true])("compaction source progress renews waiting, but silent 
       finishSource("Previous response finished");
       await run;
       expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
+      expect(freshFallbacks).toBe(0);
     } else {
       await run;
-      expect(events.at(-1)).toMatchObject({ type: "error", code: "compaction_handoff_timeout" });
+      // The silent source is retired and the checkpoint is rebuilt in a fresh chat with its own
+      // budget, instead of failing /responses/compact.
+      expect(freshFallbacks).toBe(1);
+      expect(events.some(event => event.type === "error")).toBeFalse();
+      expect(events.some(event => event.type === "text_delta"
+        && event.text.includes("Fresh checkpoint after the silent source expired"))).toBeTrue();
+      expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
     }
   } finally {
     finishSource("cleanup");

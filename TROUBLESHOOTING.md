@@ -263,8 +263,10 @@ does not override ChatGPT's own safety checks.
 
 After updating, refresh **Codex Native2** in ChatGPT's plugin settings to load its current tool
 descriptions. This updates the compaction tool contract; it does not remove safety restrictions.
-If compaction ends without a submitted summary, the launcher reports that failure and preserves
-the existing task history.
+If the retained chat ends without a submitted summary, if ChatGPT's safety checks block it, or if it
+shows no activity for five minutes (`compaction_handoff_timeout`), the bridge summarizes the complete
+Codex history in a fresh chat instead. Compaction fails, and the existing task history is preserved,
+only when that fresh summary also fails.
 
 ### A tool reports an invalid or expired turn token
 
@@ -372,6 +374,11 @@ Do not assume that a generic 502 means the Tunnel is broken. Since v4.0.7, a nat
 outlives its turn binding is reported explicitly as `codex_tool_timeout` and retired rather than
 being presented as an ambiguous proxy success.
 
+If the launcher's browser tab disappears without anyone closing it (a renderer crash, a failed
+navigation), the bridge reports `chatgpt_surface_lost` as retryable. The launcher's end-of-turn
+answer tells that apart from you closing the tab, which remains a terminal `client_cancelled`.
+The retry builds a new chat from the complete Codex history; the old chat's response is discarded.
+
 If Stop disappears before the final answer, the bridge allows up to ten minutes without new
 observable response activity. A visible error or a completed empty answer has its own check.
 An idle timeout does not establish why ChatGPT stopped responding. Keep the original ChatGPT tab
@@ -407,13 +414,43 @@ safe log. `native_compaction_upstream_failed` records the route, model, HTTP sta
 request identifiers without prompt contents or credentials. A separate Web context-length error
 still requires its own diagnosis; changing the native protocol does not increase Web input limits.
 
-## ChatGPT says the account is temporarily limited
+## ChatGPT says the model is at capacity, or the account is limited
+
+ChatGPT shows three different notices, and the bridge treats them differently.
+
+**"Selected model is at capacity"** and **a usage limit** are waited out by the bridge itself.
+The bridge classifies them as `chatgpt_model_at_capacity` and `chatgpt_usage_limit_reached`, keeps
+the Codex stream open and alive, waits, and then rebuilds the turn in a new chat from the complete
+Codex history, so Codex sees no failure and nothing is submitted twice. A model at capacity is
+retried after 30 s, 1, 2 and then every 5 min. A usage limit that states a time ("try again in
+2 hours") is waited for that long; without a stated time the wait is 15 min. One stalled turn waits
+at most **two hours in total**, and the allowance starts over each time a tool round is delivered.
+At most 20 automatic re-submissions are made per hour across all tasks. Tune or disable it:
+
+```json
+{ "limitWaitMinutes": 240 }
+```
+
+in `~/.codex-chatgpt-web/config.json` (`0` reports these notices at once, as a retryable error), or
+set `CODEX_CHATGPT_WEB_LIMIT_WAIT_MINUTES` for the bridge process, which takes precedence. Restart
+Codex Web GPT after changing the file. The safe log records every wait as `limit_wait` (kind,
+delay, total waited, attempt) and every give-up as `limit_wait_gave_up` with its reason.
+
+If a limit does not clear within the allowance, or ChatGPT states a time longer than the allowance,
+the failure is reported once as a non-retryable error that says what the bridge already did, and
+Codex receives the same answer if it asks again for that turn. Waiting never switches model, mode or
+account, and never adds concurrency. It also does not apply once the response stream has already
+carried text or tool calls; in that case the notice is returned as an ordinary retryable error.
+
+**The "Too many requests" dialog** is a different, deliberate hard stop: it is never retried
+automatically, because dismissing it does not prove the cooldown has cleared. Wait a few minutes,
+or let a supervisor such as the long-run supervisor wait it out.
 
 The bridge permits at most five simultaneous browser tabs as an account-safety ceiling. Five is not
 a recommended concurrency setting, and ChatGPT does not expose a stable numeric quota or cooldown.
 Some accounts have reached a limit with only two turns started close together.
 
-After the first account-side limit response, stop retrying and let the cooldown clear. For a
+After a "Too many requests" response, let the cooldown clear before starting more work. For a
 conservative starting point, set one spawned agent thread at a time in the existing `[agents]`
 section of `~/.codex/config.toml`:
 

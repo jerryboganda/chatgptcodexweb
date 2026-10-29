@@ -189,6 +189,41 @@ every later tool action in the same turn continues to present the current turn c
 ChatGPT status rows become reasoning summaries, while stable prose between rows becomes native
 Codex commentary.
 
+## Automatic recovery
+
+An unattended Codex task must outlive transient ChatGPT trouble without anyone clicking anything,
+so the bridge handles the cases below itself. Every recovery rebuilds the turn in a **new** ChatGPT
+chat from the complete canonical Codex history and discards the old chat's response. None of them
+resends a prompt into a chat that may already hold it, and none shortens the history.
+
+| Situation | What the bridge does |
+| --- | --- |
+| ChatGPT says the selected model is at capacity (`chatgpt_model_at_capacity`) | Waits 30 s, then 1, 2 and 5 min (the last delay repeats), and rebuilds the turn after each wait. |
+| ChatGPT reports a usage limit (`chatgpt_usage_limit_reached`) | Waits the time ChatGPT states ("try again in 2 hours 5 minutes", plus 30 s), or 15 min when it states none, then rebuilds the turn. A stated time longer than the remaining budget is reported at once; waiting less could not help. |
+| The launcher surface disappears without a user closing it (`chatgpt_surface_lost`) | The failure becomes retryable, so the retry builds a new chat. The launcher's own end-of-turn answer separates this from a user closing the tab, which stays a terminal `client_cancelled`. |
+| A retained compaction checkpoint does not arrive within its five-minute liveness budget (`compaction_handoff_timeout`) | Summarizes the canonical history in a fresh chat with a new budget, like a missing or blocked checkpoint. A timeout of that fresh summary is final. |
+
+Waiting is bounded, and Codex never sees it:
+
+- One stalled turn may wait **two hours in total** (`limitWaitMinutes` in `config.json`, or the
+  `CODEX_CHATGPT_WEB_LIMIT_WAIT_MINUTES` environment variable; `0` turns waiting off). The budget
+  starts over whenever a tool round is delivered, so a long task that keeps making progress is never
+  charged for an earlier outage.
+- The Responses stream stays open and alive for the whole wait: the adapter heartbeats every 10 s and
+  the bridge writes keep-alive frames, so neither Codex's idle timer nor the bridge's stall watchdog fires.
+- The wait is held per native Codex turn. If Codex reconnects during it, the reconnect waits out the
+  rest of the delay and joins the same rebuilt turn; it cannot cause a second submission.
+- It applies only while the stream carries nothing but keep-alives. After any text, reasoning or tool
+  call has been delivered, rebuilding inside the same stream would repeat output, so the failure is
+  returned to Codex as an ordinary retryable ChatGPT error instead.
+- A per-turn budget of three retries (also reset by delivered tool rounds) and a process-wide ceiling of
+  20 automatic re-submissions per rolling hour keep an outage from hammering the account.
+- When the budget is used up the failure is reported once, with what the bridge already did, as a
+  non-retryable error. Codex asking again for that turn receives the same error without a new submission.
+
+The "Too many requests" dialog is different: it is a deliberate hard stop that is never retried
+automatically.
+
 ## Local ChatGPT Limits
 
 The launcher Limits page is an opt-in estimate of its own accepted browser submissions. Setup
@@ -292,6 +327,9 @@ activation removes the production registration. See [setup details](../TROUBLESH
 - Never place secret values in command-line arguments, logs, generated profiles, or Git.
 - Limit browser turns to five independent task-bound tabs and reject unsupported models explicitly.
   The selected routed model fixes the adapter effort; a conflicting request effort cannot change it.
-- Do not retry or switch modes to evade product usage limits.
+- Never retry, switch modes, change accounts or add concurrency to evade a product limit. The only
+  automatic response to a capacity or usage-limit notice is the bounded, idle wait described under
+  [Automatic recovery](#automatic-recovery), in the same account and mode, with a per-hour ceiling;
+  the "Too many requests" dialog remains a hard stop.
 
 See the complete [security model](security-model.md).

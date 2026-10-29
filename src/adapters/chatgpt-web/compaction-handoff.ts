@@ -182,6 +182,17 @@ function currentToolResults(
 
 export const MAX_COMPACTION_HANDOFF_TIMEOUT_MS = 5 * 60_000;
 
+export const COMPACTION_HANDOFF_TIMEOUT_CODE = "compaction_handoff_timeout";
+
+export function compactionHandoffTimeoutError(message: string): ChatGptWebAdapterError {
+  return new ChatGptWebAdapterError(message, {
+    status: 409,
+    errorType: "invalid_request_error",
+    code: COMPACTION_HANDOFF_TIMEOUT_CODE,
+    retryable: false,
+  });
+}
+
 function boundedCompactionTimeout(timeoutMs: number): number {
   return Math.min(timeoutMs, MAX_COMPACTION_HANDOFF_TIMEOUT_MS);
 }
@@ -345,7 +356,8 @@ export async function requestRetainedCompactionHandoff(
   const operationTimeoutMs = boundedCompactionTimeout(timeoutMs);
   const deadline = new AbortController();
   const deadlineTimer = setTimeout(
-    () => deadline.abort(new Error(`ChatGPT compaction handoff timed out after ${operationTimeoutMs}ms`)),
+    // A typed failure, so the caller can fall back to a fresh-chat summary instead of failing compaction.
+    () => deadline.abort(compactionHandoffTimeoutError(`ChatGPT compaction handoff timed out after ${operationTimeoutMs}ms`)),
     operationTimeoutMs,
   );
   deadlineTimer.unref?.();

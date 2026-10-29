@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { observeChatGptAttachmentUploads } from "./attachment-upload";
 import { chatGptResponseStructureLogEntries, chatGptResponseStructures } from "./browser-response-structure";
+import { chatGptLimitNoticeTexts } from "./browser-limit-notice";
+import { chatGptLimitError, classifyChatGptLimitText } from "./limit-wait";
 import { chatGptInteractionState } from "./browser-interaction-state";
 import { BrowserDiagnosticHistory } from "./browser-diagnostic-history";
 import { readChatGptUserMessage } from "./browser-user-message";
@@ -100,8 +102,13 @@ import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 import {
   ChatGptCompactionHandoffAccepted,
   ChatGptWebAdapterError,
+  CHATGPT_SURFACE_LOST_CODE,
+  chatGptBrowserPageClosedError,
+  chatGptBrowserSurfaceLostError,
   chatGptBrowserTabClosedError,
   chatGptRetainedConversationUnavailableError,
+  isChatGptClosedBrowserTargetError,
+  ChatGptBrowserPageClosedError,
   chatGptStoppedThinkingError,
   chatGptResponseIncompleteError,
   chatGptToolApprovalRequiredError,
@@ -370,9 +377,39 @@ const chatGptRateLimitDialog = (page: Page): Locator => page.locator('[role="dia
   .filter({ hasText: /making requests too quickly|過於頻繁|过于频繁|リクエストの頻度が高すぎます|요청을 너무 빠르게|요청이 너무 많습니다|너무 많은 요청/i })
   .last();
 
+// Prefilter only; the dialog text is classified by classifyChatGptLimitText before anything is thrown.
+const CHATGPT_LIMIT_DIALOG_PREFILTER = /usage limit|(?:reached|hit|exceeded|used up)[^.]{0,80}limit|limit[^.]{0,40}(?:reached|exceeded)|at capacity|over ?capacity|overloaded/i;
+
+const CHATGPT_LIMIT_DIALOG_PROBE_INTERVAL_MS = 500;
+const chatGptLimitDialogProbedAt = new WeakMap<object, number>();
+
+/**
+ * A dialog that says the model is at capacity or a usage limit was reached. Never throws anything
+ * else. Throttled per page because the selection and send loops call it every few milliseconds.
+ */
+async function throwIfChatGptLimitDialog(page: Page, now = Date.now()): Promise<void> {
+  try {
+    const previous = chatGptLimitDialogProbedAt.get(page);
+    if (previous !== undefined && now - previous < CHATGPT_LIMIT_DIALOG_PROBE_INTERVAL_MS) return;
+    chatGptLimitDialogProbedAt.set(page, now);
+    const dialog = page.locator('[role="dialog"], [role="alertdialog"]')
+      .filter({ hasText: CHATGPT_LIMIT_DIALOG_PREFILTER })
+      .last();
+    if (!await dialog.isVisible()) return;
+    const limit = classifyChatGptLimitText(await dialog.innerText({ timeout: 2_000 }));
+    if (limit) throw chatGptLimitError(limit);
+  } catch (error) {
+    if (error instanceof ChatGptWebAdapterError) throw error;
+    // Unreadable or absent: the existing dialog handling stays authoritative.
+  }
+}
+
 export async function throwIfChatGptRateLimitDialog(page: Page): Promise<void> {
   const dialog = chatGptRateLimitDialog(page);
-  if (!await dialog.isVisible().catch(() => false)) return;
+  if (!await dialog.isVisible().catch(() => false)) {
+    await throwIfChatGptLimitDialog(page);
+    return;
+  }
 
   const acknowledge = dialog.getByRole("button", { name: /^(Got it|知道了|了解|알겠습니다|확인)$/ }).last();
   if (await acknowledge.isVisible().catch(() => false)) {
@@ -404,6 +441,19 @@ const chatGptExpiredSessionAlert = (page: Page): Locator => page
   .locator('[role="alert"], [role="dialog"]')
   .filter({ hasText: /Your session has expired|你的工作階段已過期|您的工作階段已過期|你的会话已过期|您的会话已过期/i })
   .last();
+
+/**
+ * True only when the worker's own page vanished while the launcher's end-of-turn handshake proved
+ * that no user cancelled it and nothing in the runtime asked for the turn to stop.
+ */
+export function isChatGptLostSurfaceError(
+  error: unknown,
+  cancelledByUser: boolean,
+  abortSignal?: AbortSignal,
+): boolean {
+  if (cancelledByUser || abortSignal?.aborted) return false;
+  return error instanceof ChatGptBrowserPageClosedError || isChatGptClosedBrowserTargetError(error);
+}
 
 export async function throwIfChatGptSessionFailureAlert(page: Page): Promise<void> {
   if (await chatGptExpiredSessionAlert(page).isVisible().catch(() => false)) {
@@ -586,18 +636,71 @@ type SelectedChatGptWebModelMode = ChatGptWebModelMode & {
   usageModel?: ChatGptUsageModel;
 };
 
+/** Product-notice text of an owned response turn, or [] when it cannot be read (never throws). */
+async function chatGptTurnNoticeTexts(scope: ChatGptTextScope): Promise<string[]> {
+  try {
+    const read = (scope as unknown as Partial<Pick<Locator, "evaluate">>).evaluate;
+    if (typeof read !== "function") return [];
+    const texts = await read.call(scope, chatGptLimitNoticeTexts, undefined, { timeout: 2_000 }) as unknown;
+    return Array.isArray(texts) ? texts.filter((text): text is string => typeof text === "string") : [];
+  } catch {
+    // A notice that cannot be read leaves the generic response-error classification in force.
+    return [];
+  }
+}
+
+export function classifyChatGptLimitNotices(texts: readonly string[]): ChatGptWebAdapterError | undefined {
+  for (const text of texts) {
+    const classification = classifyChatGptLimitText(text);
+    if (classification) return chatGptLimitError(classification);
+  }
+  return undefined;
+}
+
 export async function throwIfChatGptTerminalErrorAlert(scope: ChatGptTextScope): Promise<void> {
-  if (await scope.getByTestId("regenerate-thread-error-button").last().isVisible().catch(() => false)) {
+  const retryControlVisible = await scope.getByTestId("regenerate-thread-error-button").last().isVisible().catch(() => false);
+  const somethingWentWrong = !retryControlVisible
+    && await chatGptTerminalErrorAlert(scope).isVisible().catch(() => false);
+  if (!retryControlVisible && !somethingWentWrong) return;
+  // The response ended in ChatGPT's own error surface. Its explanation can be more specific than
+  // the generic failure: a model at capacity or a usage limit is waited out, not retried at once.
+  const limit = classifyChatGptLimitNotices(await chatGptTurnNoticeTexts(scope));
+  if (limit) throw limit;
+  if (retryControlVisible) {
     throw new ChatGptWebAdapterError(
       "ChatGPT displayed an error for this response. Check the ChatGPT tab for the exact error, then retry the turn.",
       { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: true },
     );
   }
-  if (!await chatGptTerminalErrorAlert(scope).isVisible().catch(() => false)) return;
   throw new ChatGptWebAdapterError(
     "ChatGPT ended the turn with 'Something went wrong'. Retry the turn.",
     { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: true },
   );
+}
+
+const CHATGPT_LIMIT_NOTICE_PROBE_INTERVAL_MS = 1_000;
+const chatGptLimitNoticeProbedAt = new WeakMap<object, number>();
+
+/**
+ * Page-level probe for a capacity or usage-limit notice that ChatGPT shows outside the response
+ * turn (a banner or toast above the composer). Callers use it only while no generation has been
+ * observed, so a warning shown during a healthy response can never fail the turn. Throttled because
+ * the observation loops run every few hundred milliseconds, and never throws anything but the
+ * classified failure.
+ */
+export async function throwIfChatGptLimitNotice(page: Page, now = Date.now()): Promise<void> {
+  let texts: string[];
+  try {
+    const previous = chatGptLimitNoticeProbedAt.get(page);
+    if (previous !== undefined && now - previous < CHATGPT_LIMIT_NOTICE_PROBE_INTERVAL_MS) return;
+    chatGptLimitNoticeProbedAt.set(page, now);
+    texts = await page.locator("html").evaluate(chatGptLimitNoticeTexts, undefined, { timeout: 2_000 });
+  } catch {
+    // An unreadable page is the other observers' concern; this probe only ever adds a classification.
+    return;
+  }
+  const limit = classifyChatGptLimitNotices(Array.isArray(texts) ? texts : []);
+  if (limit) throw limit;
 }
 
 export async function throwIfChatGptToolApprovalRequired(scope: Pick<Locator, "locator">): Promise<void> {
@@ -2894,7 +2997,7 @@ export class ChatGptBrowserWorker {
     );
     for (;;) {
       if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
-      if (observationPage.isClosed()) throw chatGptBrowserTabClosedError();
+      if (observationPage.isClosed()) throw chatGptBrowserPageClosedError();
       let progress = externalProgress?.snapshot();
       if (progress?.lastProgressAt !== undefined) {
         responseDeadline = Math.min(
@@ -2907,6 +3010,9 @@ export class ChatGptBrowserWorker {
       }
       await throwIfChatGptSessionFailureAlert(observationPage);
       await throwIfChatGptRateLimitDialog(observationPage);
+      // No assistant turn is bound yet, so nothing has been generated: a capacity or usage-limit
+      // notice here means ChatGPT refused the message.
+      if (!generation?.active()) await throwIfChatGptLimitNotice(observationPage);
       await generation?.checkFailure?.();
       let state: ChatGptSubmissionDomState;
       try {
@@ -3579,7 +3685,7 @@ export class ChatGptBrowserWorker {
     const sendEnableDeadline = Date.now() + CHATGPT_SEND_ENABLE_GRACE_MS;
     for (;;) {
       if (abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
-      if (page.isClosed()) throw chatGptBrowserTabClosedError();
+      if (page.isClosed()) throw chatGptBrowserPageClosedError();
       await throwIfChatGptSessionFailureAlert(page);
       await throwIfChatGptRateLimitDialog(page);
       if (await sendButton.isEnabled()) break;
@@ -3653,7 +3759,7 @@ export class ChatGptBrowserWorker {
     const responseDomCache: ChatGptResponseDomCache = {};
     let responseTurn = initialResponseTurn;
     for (;;) {
-      if (page.isClosed()) throw chatGptBrowserTabClosedError();
+      if (page.isClosed()) throw chatGptBrowserPageClosedError();
       if (abortSignal?.aborted) {
         const stop = chatGptStopButton(page);
         if (await stop.isVisible().catch(() => false)) await stop.press("Enter").catch(() => {});
@@ -3708,6 +3814,7 @@ export class ChatGptBrowserWorker {
       const running = await chatGptStopButton(page).isVisible().catch(() => false);
       const responseStreamActive = generation?.active() ?? false;
       if (running || responseStreamActive) generation?.progress();
+      else await throwIfChatGptLimitNotice(page);
       const domError = domHealthTracker.update({
         responsePresent: snapshot.responsePresent,
         running,
@@ -4609,7 +4716,7 @@ export class ChatGptBrowserWorker {
     if (observed?.extractionError) throw new Error(observed.extractionError);
     if (!observed) {
       if (responseTurn.page().isClosed()) {
-        throw chatGptBrowserTabClosedError();
+        throw chatGptBrowserPageClosedError();
       }
       return absentResponseDomSnapshot();
     }
@@ -4789,9 +4896,16 @@ export class ChatGptBrowserWorker {
             { status: 401, errorType: "authentication_error", code: "chatgpt_sign_in_required", retryable: false },
           );
         }
+        // The launcher keeps a record of every tab a user closed, and the runtime's own cancellation
+        // aborts this signal. A vanished surface with neither is a crash or lost lease, not a decision
+        // to stop: the old chat is discarded and a retry rebuilds a new one from the full history.
+        // (A launcher answer of cancelledByUser: true was already thrown above.)
+        if (isChatGptLostSurfaceError(originalError, false, turn.abortSignal)) {
+          throw chatGptBrowserSurfaceLostError(originalError);
+        }
       } catch (controlError) {
         if (controlError instanceof ChatGptWebAdapterError
-          && ["client_cancelled", "chatgpt_sign_in_required"].includes(controlError.code)) {
+          && ["client_cancelled", "chatgpt_sign_in_required", CHATGPT_SURFACE_LOST_CODE].includes(controlError.code)) {
           throw controlError;
         }
         if (!originalError) throw controlError;
@@ -5411,6 +5525,9 @@ export class ChatGptBrowserWorker {
       let lastHeartbeat = 0;
       let finalText = "";
       let sawRunning = false;
+      // Set once the response showed any text or activity of its own: from then on a failure can no
+      // longer be classified as ChatGPT refusing the message.
+      let producedOutput = false;
       let loggedCompletionWait = false;
       let capturedResponse = false;
       const sentAt = Date.now();
@@ -5421,7 +5538,10 @@ export class ChatGptBrowserWorker {
         : undefined;
       const emitMarkdownDelta = (delta: string): void => {
         const visible = checkpointStream ? checkpointStream.push(delta) : delta;
-        if (visible) turn.onTextDelta(visible);
+        if (visible) {
+          producedOutput = true;
+          turn.onTextDelta(visible);
+        }
       };
       const throwMarkdownConsistencyError = (error: unknown): never => {
         if (!(error instanceof ChatGptMarkdownConsistencyError)) throw error;
@@ -5453,7 +5573,7 @@ export class ChatGptBrowserWorker {
        try {
         observedThisIteration = false;
         if (page.isClosed()) {
-          throw chatGptBrowserTabClosedError();
+          throw chatGptBrowserPageClosedError();
         }
         if (turn.abortSignal?.aborted) {
           const stop = chatGptStopButton(page);
@@ -5570,6 +5690,11 @@ export class ChatGptBrowserWorker {
         const responseStreamActive = generation.active();
         if (running || responseStreamActive) generation.progress();
         if (running) sawRunning = true;
+        // A capacity or usage-limit notice means ChatGPT refused the message: only believe it while
+        // the response never ran and produced nothing.
+        if (!running && !responseStreamActive && !sawRunning && !producedOutput) {
+          await throwIfChatGptLimitNotice(page);
+        }
         if (snapshot.responsePresent) {
           if (!capturedResponse) {
             capturedResponse = true;
@@ -5583,6 +5708,7 @@ export class ChatGptBrowserWorker {
             }
           })();
           for (const trace of visibleTrace.observe(snapshot.traceBlocks, snapshot.completionActionVisible)) {
+            producedOutput = true;
             if (trace.kind === "commentary") turn.onCommentary?.(trace.text, trace.continuation === true);
             else turn.onReasoningSummary?.(trace.text, trace.continuation === true);
           }

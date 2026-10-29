@@ -64,6 +64,57 @@ export function chatGptBrowserTabClosedError(): ChatGptWebAdapterError {
   );
 }
 
+/**
+ * The browser worker saw its own page disappear. This is the same terminal `client_cancelled` error
+ * as a closed tab until the launcher's end-of-turn handshake proves that no user closed the tab
+ * (`cancelledByUser: false`); only then is it converted into {@link chatGptBrowserSurfaceLostError}.
+ * Only the page-closed observation sites in the browser worker may construct this marker.
+ */
+export class ChatGptBrowserPageClosedError extends ChatGptWebAdapterError {
+  constructor() {
+    super("The ChatGPT browser tab was closed, so the Codex turn was cancelled.", {
+      status: 499,
+      errorType: "client_closed_request",
+      code: "client_cancelled",
+      retryable: false,
+    });
+    this.name = "ChatGptBrowserPageClosedError";
+  }
+}
+
+export function chatGptBrowserPageClosedError(): ChatGptWebAdapterError {
+  return new ChatGptBrowserPageClosedError();
+}
+
+export const CHATGPT_SURFACE_LOST_CODE = "chatgpt_surface_lost";
+
+/**
+ * The launcher surface disappeared (renderer crash, failed navigation, expired lease) without a
+ * user cancelling it. The old chat is discarded; a retry rebuilds a new chat from the complete
+ * canonical history, so it can never double-submit into the lost conversation.
+ */
+export function chatGptBrowserSurfaceLostError(cause?: unknown): ChatGptWebAdapterError {
+  return new ChatGptWebAdapterError(
+    "The ChatGPT browser surface was lost before the response finished, and no one closed it. "
+    + "The turn can be retried in a new chat that carries the complete task history.",
+    {
+      status: 503,
+      errorType: "server_error",
+      code: CHATGPT_SURFACE_LOST_CODE,
+      retryable: true,
+      ...(cause !== undefined ? { cause } : {}),
+    },
+  );
+}
+
+/** Playwright wording for a page, context or browser that went away underneath an in-flight call. */
+const CLOSED_BROWSER_TARGET = /\b(?:target (?:page, context or browser has been closed|closed|crashed)|page crashed|(?:page|browser|context) has been closed|browser (?:has )?closed)\b/i;
+
+export function isChatGptClosedBrowserTargetError(error: unknown): boolean {
+  if (error instanceof ChatGptWebAdapterError) return false;
+  return error instanceof Error && CLOSED_BROWSER_TARGET.test(error.message);
+}
+
 export function chatGptTurnSupersededError(): ChatGptWebAdapterError {
   return new ChatGptWebAdapterError(
     "A newer Codex instruction superseded this ChatGPT response.",
