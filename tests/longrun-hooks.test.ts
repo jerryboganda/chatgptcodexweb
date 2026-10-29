@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -346,7 +346,7 @@ test("state survives a round trip and rejects tampering", () => {
 
 function runCli(args: string[], home: string, input: string) {
   return spawnSync(process.execPath, [join(import.meta.dir, "..", "src", "cli.ts"), "--home", home, ...args], {
-    input, encoding: "utf8", timeout: 60_000, env: { ...process.env, CODEX_CHATGPT_WEB_HOME: home },
+    input, encoding: "utf8", timeout: 60_000, env: { ...process.env, CODEX_CHATGPT_WEB_HOME: home, CODEX_HOME: join(home, "codex") },
   });
 }
 
@@ -362,7 +362,7 @@ test("the hook command fails open on garbage and prints a block decision for fai
   writeFileSync(join(project, "AGENTS.md"), `acceptance: "${process.execPath.replaceAll("\\", "/")}" -e "console.log('NOT YET'); process.exit(1)"\n`);
   git("add", "-A");
   git("commit", "-qm", "seed");
-  const base = { session_id: SESSION, cwd: project, model: "chatgpt-web/gpt-6-sol" };
+  const base = { session_id: SESSION, cwd: project, model: "chatgpt-web/gpt-6-sol", permission_mode: "bypassPermissions" };
   expect(runCli(["hook", "prompt"], home, JSON.stringify({ ...base, hook_event_name: "UserPromptSubmit", prompt: "build it" })).status).toBe(0);
   writeFileSync(join(project, "work.txt"), "changed");
   const result = runCli(["hook", "stop"], home, JSON.stringify({ ...base, hook_event_name: "Stop", last_assistant_message: "Done." }));
@@ -408,3 +408,23 @@ test("an untrusted folder gets one explanation and its acceptance command is not
   expect(await handleStop(stop(), deps)).toBeUndefined();
   expect(calls.acceptance).toBe(0);
 });
+
+test("through the real CLI an untrusted folder is explained once and its command never runs", () => {
+  const home = temp();
+  const project = temp("longrun-project-");
+  const git = (...args: string[]) => spawnSync("git", ["-C", project, "-c", "user.name=t", "-c", "user.email=t@t", ...args], { encoding: "utf8" });
+  git("init", "-q");
+  const slash = (path: string) => path.replaceAll(String.fromCharCode(92), "/");
+  const marker = slash(join(project, "ran.txt"));
+  const command = `"${slash(process.execPath)}" -e "require('fs').writeFileSync('${marker}', 'x'); process.exit(1)"`;
+  writeFileSync(join(project, "AGENTS.md"), `acceptance: ${command}${String.fromCharCode(10)}`);
+  git("add", "-A");
+  git("commit", "-qm", "seed");
+  const base = { session_id: SESSION, cwd: project, model: "chatgpt-web/gpt-6-sol", permission_mode: "default" };
+  runCli(["hook", "prompt"], home, JSON.stringify({ ...base, hook_event_name: "UserPromptSubmit", prompt: "build it" }));
+  writeFileSync(join(project, "work.txt"), "changed");
+  const result = runCli(["hook", "stop"], home, JSON.stringify({ ...base, hook_event_name: "Stop", last_assistant_message: "Done." }));
+  expect(result.status).toBe(0);
+  expect(JSON.parse(result.stdout.trim()).systemMessage).toContain("not trusted in Codex");
+  expect(existsSync(marker)).toBe(false);
+}, 120_000);
