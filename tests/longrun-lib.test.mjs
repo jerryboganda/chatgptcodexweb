@@ -92,6 +92,14 @@ test("rate limits wait for the stated time and do not count as failures", () => 
   assert.equal(d.state.consecutiveFailures, 0);
 });
 
+test("a model at capacity is retried after a short wait, not the usage-limit wait", () => {
+  const d = decide({ round: { outcome: "failed", failureText: "Selected model is at capacity. Please try a different model." } });
+  assert.equal(d.action, "continue");
+  assert.equal(d.reason, "rate_limited");
+  assert.equal(d.waitMs, 5 * 60_000);
+  assert.equal(d.state.consecutiveFailures, 0);
+});
+
 test("a full context window moves the work to a fresh chat", () => {
   const d = decide({ round: { outcome: "failed", failureText: "Codex ran out of room in the model's context window" } });
   assert.equal(d.action, "fresh");

@@ -30,6 +30,7 @@ export const DEFAULTS = Object.freeze({
   maxAuthWaits: 6,
   authWaitMs: 10 * MINUTE,
   rateLimitDefaultWaitMs: 15 * MINUTE,
+  capacityWaitMs: 5 * MINUTE,
   maxWaitMs: 6 * HOUR,
   backoffBaseMs: 15_000,
   backoffMaxMs: 10 * MINUTE,
@@ -261,7 +262,9 @@ export function decideNext({ state, round, verify, progress, fingerprint, now, j
     return { action: "continue", reason: "waiting_for_login", waitMs: opts.authWaitMs, state: next };
   }
   if (kind === KIND.RATE_LIMIT) {
-    const waitMs = Math.min(opts.maxWaitMs, parseRetryAfterMs(round.failureText) ?? opts.rateLimitDefaultWaitMs);
+    // "Selected model is at capacity" clears within minutes and has no quota to wait out.
+    const fallbackMs = /at capacity/i.test(round.failureText ?? "") ? opts.capacityWaitMs : opts.rateLimitDefaultWaitMs;
+    const waitMs = Math.min(opts.maxWaitMs, parseRetryAfterMs(round.failureText) ?? fallbackMs);
     return { action: "continue", reason: "rate_limited", waitMs, state: next };
   }
 
