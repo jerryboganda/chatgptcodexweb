@@ -27,14 +27,10 @@ export interface LongrunSettings {
   driverModelPrefixes: string[];
   workerModel: string;
   workerEffort: WorkerEffort;
-  /** Sandbox of the worker's own Codex run. */
-  workerSandbox: WorkerSandbox;
 }
 
 export const WORKER_EFFORTS = ["medium", "high", "xhigh"] as const;
 export type WorkerEffort = typeof WORKER_EFFORTS[number];
-export const WORKER_SANDBOXES = ["workspace-write", "danger-full-access"] as const;
-export type WorkerSandbox = typeof WORKER_SANDBOXES[number];
 
 export const DEFAULT_LONGRUN_SETTINGS: LongrunSettings = Object.freeze({
   enabled: true,
@@ -43,7 +39,6 @@ export const DEFAULT_LONGRUN_SETTINGS: LongrunSettings = Object.freeze({
   driverModelPrefixes: ["gpt-6-luna", "gpt-5.6-luna"],
   workerModel: "chatgpt-web/gpt-6-sol",
   workerEffort: "xhigh" as WorkerEffort,
-  workerSandbox: "workspace-write" as WorkerSandbox,
   maxContinuations: 40,
   maxHours: 20,
   sameFailureLimit: 5,
@@ -96,7 +91,6 @@ export function normalizeSettings(raw: unknown): LongrunSettings {
     driverModelPrefixes: driverPrefixes.length > 0 ? driverPrefixes.slice(0, 20) : [...defaults.driverModelPrefixes],
     workerModel,
     workerEffort,
-    workerSandbox: WORKER_SANDBOXES.find((sandbox) => sandbox === source.workerSandbox) ?? defaults.workerSandbox,
     maxContinuations: Math.round(clampNumber(source.maxContinuations, LONGRUN_LIMITS.maxContinuations, defaults.maxContinuations)),
     maxHours: clampNumber(source.maxHours, LONGRUN_LIMITS.maxHours, defaults.maxHours),
     sameFailureLimit: Math.round(clampNumber(source.sameFailureLimit, LONGRUN_LIMITS.sameFailureLimit, defaults.sameFailureLimit)),

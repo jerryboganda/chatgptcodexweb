@@ -76,11 +76,11 @@ built-in subagent tool is not used: it only starts agents when the user asks for
 
 Who does what (learned from real 10-hour runs that stalled on jobs the worker could not do):
 
-- **The worker** writes and fixes code in one small slice per job and runs only focused checks. Its sandbox has no
-  network and no credentials, so every brief starts with rules telling it not to build workarounds for those. It puts a
-  line starting with `BLOCKED:` in its report instead, which Luna then clears itself or records as a manual step.
-- **Luna** does the network, downloads and installs, toolchain and environment setup, credential and Docker checks, and
-  every full-suite or acceptance run. It checks the environment before the first job and records it in PROGRESS.md.
+- **The worker** writes and fixes code in one small slice per job and runs only focused checks. It has full access, the
+  network included, and installs what its slice needs. Every brief starts with rules telling it not to build workarounds
+  for what nobody on this PC can provide (a credential, an account, a server); it puts a line starting with `BLOCKED:` in
+  its report instead, which Luna then clears itself or records as a manual step.
+- **Luna** does the environment checks (network, toolchains, Docker, credentials) and every full-suite or acceptance run. It checks the environment before the first job and records it in PROGRESS.md.
 - **Manual steps**: something nobody on the PC can fix (credentials, a server, a decision) goes under "manual steps" in
   PROGRESS.md with what you must do; everything else is finished and Luna says so instead of retrying it.
 - **Acceptance** should be a command that can really pass on this PC (tests, lint, build). A project pipeline that also
@@ -92,21 +92,18 @@ codex-chatgpt-web longrun worker xhigh     # worker effort: medium, high or xhig
 codex-chatgpt-web longrun driver off       # Luna works alone again; `driver on` switches it back
 codex-chatgpt-web longrun status           # shows the driver, the worker and whether the block is installed
 codex-chatgpt-web longrun health           # are the runs of the last day alive? per project, and what looks wrong
-codex-chatgpt-web longrun sandbox danger-full-access   # give the worker full access, like Luna (see below)
 ```
 
 Open a new Codex chat after changing either setting. Whether Luna hands the work over is its own decision, guided by
-the block; the acceptance command is what enforces completion. The worker's sandbox is `workerSandbox` in
-`~/.codex-chatgpt-web/longrun.json` (`workspace-write` by default, or `danger-full-access`).
+the block; the acceptance command is what enforces completion. The worker runs with full access (`danger-full-access`, approvals off), like the Luna driver.
 
 `longrun health` reads Codex's own session files and says, per project, whether the Luna driver and the worker are working,
 finished or interrupted, and flags a driver that went silent in the middle of a turn (Codex restarted or lost its
 connection: open that chat and send "continue") and a worker that outlived its driver.
 
-The default `workspace-write` sandbox keeps the worker's writes inside the project, but on Windows it also blocks tools
-that write caches or rename folders elsewhere: real runs saw hundreds of `EPERM`, `EACCES` and "Access is denied"
-errors in worker sessions against a handful in Luna's (which has full access). If workers keep failing that way, `longrun
-sandbox danger-full-access` removes the limit; it also removes the protection, so use it for projects you trust.
+The worker has no sandbox: on Windows the `workspace-write` sandbox blocked tools that write caches or rename folders elsewhere
+(hundreds of `EPERM`, `EACCES` and "Access is denied" errors in worker sessions against a handful in Luna's), so every
+worker run now uses full access and no approval prompts.
 
 The rest of this page describes the **unattended supervisor**, a separate script for jobs you start yourself.
 

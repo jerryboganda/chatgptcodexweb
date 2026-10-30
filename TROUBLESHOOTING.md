@@ -255,6 +255,9 @@ in ChatGPT and choose **Permissions → Allow all actions**, then retry the turn
 **Allow ChatGPT to use …?** card means ChatGPT is waiting for a permission decision. If
 all actions are already allowed, open the ChatGPT tab and check the request; saved chats
 can still ask for one-time approval. Wait for the Stop button to disappear before approving.
+With **auto-approve tool calls** on, the launcher clicks the one-time **Allow once** itself, including on a card that has
+none of the usual wrappers, and gives a card that is not clickable yet 30 seconds before the turn fails; if it still
+fails, the browser diagnostics hold a `tool-approval-unresolved` capture of the card.
 The launcher leaves unanswered requests untouched when the turn stops.
 
 If ChatGPT says **MCP endpoint not found**, keep the launcher running and complete

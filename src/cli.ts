@@ -91,7 +91,7 @@ Setup options:
   --acknowledge-unofficial     Accept the one-time unofficial-browser-automation notice
 
 Long-run (keep a ChatGPT web task going until its check passes):
-  longrun [status|health|on|off|install|uninstall|worker <effort>|driver on|off|sandbox <mode>]
+  longrun [status|health|on|off|install|uninstall|worker <effort>|driver on|off]
                                health: are the long runs of the last day alive, and what looks wrong
   worker run [--brief-file <file>] [--effort <effort>]   run one job on the ChatGPT web worker (used by a Luna driver)
   worker status|stop [--cwd <folder>]                    is a worker running in the folder / end it

@@ -1,3 +1,4 @@
+import { chatGptToolApprovalRequiredError } from "../src/adapters/chatgpt-web/adapter-error";
 import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { EventEmitter } from "node:events";
@@ -5,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, autoApprovalGraceExpired, isChatGptToolApprovalRequired, CHATGPT_AUTO_APPROVAL_GRACE_MS, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
@@ -3105,7 +3106,7 @@ test("unrelated ChatGPT alerts are not terminal", async () => {
 
 function toolConfirmationPage(options: {
   disappearAfterReads?: number;
-  surface?: "dialog" | "card" | "current";
+  surface?: "dialog" | "card" | "current" | "inline";
   allowLabel?: "Allow once" | "Allow" | "Always allow";
 } = {}): {
   page: Page;
@@ -3142,12 +3143,16 @@ function toolConfirmationPage(options: {
       return visible;
     },
     getByRole: (_role: string, input: { name: string | RegExp }) => button(input.name),
+    last: () => dialog,
     waitFor: async ({ state }: { state: string }) => {
       expect(state).toBe("hidden");
       expect(visible).toBeFalse();
     },
   };
-  const surfaceSelector = options.surface === "current"
+  // "inline" is a card with none of the known wrappers: only the question-and-buttons search can find it.
+  const surfaceSelector = options.surface === "inline"
+    ? "div"
+    : options.surface === "current"
     ? '[data-codex-approval-surface="true"]'
     : options.surface === "card"
     ? '[data-testid="tool-approval-card"]'
@@ -3163,9 +3168,10 @@ function toolConfirmationPage(options: {
       getByText: (text: string, options: { exact: boolean }) => {
         expect(text).toBe("Allow ChatGPT to use Codex Native?");
         expect(options.exact).toBeTrue();
-        return {};
+        return { filter: () => ({ count: async () => visible ? 1 : 0 }) };
       },
-      locator: (selector: string) => selector.includes(surfaceSelector)
+      getByRole: () => ({}),
+      locator: (selector: string) => selector === surfaceSelector || (surfaceSelector !== "div" && selector.includes(surfaceSelector))
         ? dialog
         : hiddenDialog,
     } as unknown as Page,
@@ -3239,6 +3245,28 @@ test("auto-approval recognizes the observed non-dialog approval card", async () 
 
   expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", true)).toBeTrue();
   expect(fixture.pressed).toEqual(["Allow once:click"]);
+});
+
+test("auto-approval finds a card without the known wrappers by its question and one-time buttons", async () => {
+  const fixture = toolConfirmationPage({ surface: "inline" });
+  expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", true)).toBeTrue();
+  expect(fixture.pressed).toEqual(["Allow once:click"]);
+});
+
+test("the wrapper-less card is left for the user when auto-approval is off, and a permanent action is never clicked", async () => {
+  const manual = toolConfirmationPage({ surface: "inline" });
+  expect(await resolveChatGptToolConfirmation(manual.page, "Codex Native", false)).toBeFalse();
+  expect(manual.pressed).toEqual([]);
+  const permanent = toolConfirmationPage({ surface: "inline", allowLabel: "Always allow" });
+  await expect(resolveChatGptToolConfirmation(permanent.page, "Codex Native", true)).rejects.toThrow("Approval button not found");
+  expect(permanent.pressed).toEqual([]);
+});
+
+test("an approval card that auto-approval has not cleared only fails the turn after the grace period", () => {
+  expect(autoApprovalGraceExpired(1_000, 1_000 + CHATGPT_AUTO_APPROVAL_GRACE_MS - 1)).toBeFalse();
+  expect(autoApprovalGraceExpired(1_000, 1_000 + CHATGPT_AUTO_APPROVAL_GRACE_MS)).toBeTrue();
+  expect(isChatGptToolApprovalRequired(chatGptToolApprovalRequiredError())).toBeTrue();
+  expect(isChatGptToolApprovalRequired(new Error("something else"))).toBeFalse();
 });
 
 test("browser preflight separates model context from one-message transport limits", () => {

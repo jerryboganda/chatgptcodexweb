@@ -15,7 +15,7 @@ import { resolveProject } from "./project";
 import { DEFAULT_WORKER_TIMEOUT_MINUTES, formatWorkerResult, runWorker } from "./worker";
 import { acquireWorkerLock, describeWorker, liveWorker, stopWorker } from "./worker-lock";
 import { formatHealth, scanSessions } from "./health";
-import { loadLongrunSettings, longrunSettingsPath, saveLongrunSettings, WORKER_EFFORTS, WORKER_SANDBOXES } from "./settings";
+import { loadLongrunSettings, longrunSettingsPath, saveLongrunSettings, WORKER_EFFORTS } from "./settings";
 
 const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 
@@ -216,7 +216,7 @@ export async function workerCommand(args: string[]): Promise<void> {
   const startedAt = Date.now();
   try {
     const result = await runWorker({
-      cwd, brief, model, effort, sandbox: settings.workerSandbox, timeoutMs, attempts,
+      cwd, brief, model, effort, timeoutMs, attempts,
       heartbeatMs: 60_000,
       log: (line) => stdout.write(`${line}\n`),
     });
@@ -231,11 +231,10 @@ export async function workerCommand(args: string[]): Promise<void> {
   }
 }
 
-const USAGE = `Usage: codex-chatgpt-web longrun [status [folder] | health [--hours <n>] | on | off | install | uninstall | worker <effort> | driver on|off | sandbox <mode>]
+const USAGE = `Usage: codex-chatgpt-web longrun [status [folder] | health [--hours <n>] | on | off | install | uninstall | worker <effort> | driver on|off]
 
   status [folder]   show whether long-run is on, whether Codex has the hooks, and which command checks a folder
   health [--hours]  are the long runs of the last day alive? per project: driver, worker, and what looks wrong
-  sandbox <mode>    the worker's sandbox: ${WORKER_SANDBOXES.join(" or ")} (the default keeps its writes inside the project)
   on / off          turn the automatic "keep going until the check passes" behaviour on or off
   install           (re)install the Codex hooks now; they are also kept in place whenever the bridge starts
   uninstall         remove the Codex hooks and switch long-run off
@@ -269,7 +268,7 @@ export async function longrunCommand(args: string[]): Promise<void> {
     } catch { /* Status is informational. */ }
     write(`Luna drives, Sol works: ${settings.driver ? "ON" : "OFF"}. Worker: ${settings.workerModel} at ${settings.workerEffort} effort. Instructions in ~/.codex/AGENTS.md: ${driverBlock}.`);
     for (const line of describeProject(folder)) write(line);
-    write(`Worker sandbox: ${settings.workerSandbox}${settings.workerSandbox === "workspace-write" ? " (writes stay in the project; the Windows sandbox can block tools that use caches or rename folders elsewhere)" : " (full access, like the driver)"}.`);
+    write("Worker access: full, with no sandbox and no approval prompts, so the worker is never refused a file, tool or network access.");
     write(`Limits per request: ${settings.maxContinuations} automatic continuations, ${settings.maxHours} h, check timeout ${settings.acceptanceTimeoutMinutes} min.`);
     write(`Settings file: ${longrunSettingsPath(home)}`);
     return;
@@ -285,16 +284,6 @@ export async function longrunCommand(args: string[]): Promise<void> {
     return;
   }
 
-  if (action === "sandbox") {
-    const mode = WORKER_SANDBOXES.find((item) => item === (args.shift() ?? "").toLowerCase());
-    if (!mode) throw new Error(`Usage: codex-chatgpt-web longrun sandbox <${WORKER_SANDBOXES.join("|")}>`);
-    saveLongrunSettings({ workerSandbox: mode }, home);
-    write(mode === "danger-full-access"
-      ? "The worker now runs with full access, like the Luna driver: no sandbox limits its writes or its network. Only use this for projects you trust."
-      : "The worker now runs in the workspace-write sandbox: it can write inside the project only.");
-    write("The next worker job uses it.");
-    return;
-  }
 
   if (action === "on" || action === "off" || action === "install") {
     if (action !== "install") saveLongrunSettings({ enabled: action === "on" }, home);

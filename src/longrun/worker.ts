@@ -12,7 +12,6 @@ export interface WorkerOptions {
   brief: string;
   model: string;
   effort: string;
-  sandbox: string;
   timeoutMs: number;
   attempts: number;
   codex?: CodexLauncher;
@@ -85,14 +84,15 @@ export function parseWorkerEvents(lines: string[]): Pick<Attempt, "completed" | 
 }
 
 /**
- * Put before every brief. The worker's sandbox has no network and no credentials, so a job that needs them used to
- * burn an hour on workarounds; the driver handles those, and the worker is told to hand them back at once.
+ * Put before every brief. The worker has full access, network included, so it installs what its slice needs itself. What
+ * nobody on this PC can provide (a credential, an account, a server) used to burn an hour on workarounds: the worker is
+ * told to hand those back at once.
  */
 export const WORKER_RULES = [
   "You are a coding worker driven by another agent. Do only the one job below, which is one small slice of a larger goal.",
   "Run focused checks for the files you change; do not run the project's whole test suite or its full check pipeline, because the driver does that.",
-  "Do not try to get around a missing network, package download, toolchain, credential, Docker or server access with proxies, wrappers or downloads of your own.",
-  "If the job needs one of those, stop there, finish whatever does not need it, and put a line starting with `BLOCKED:` in your final report that says exactly what is missing.",
+  "You have full access to this PC, the network included: install or download what the job needs yourself.",
+  "If the job needs something nobody on this PC can provide (a credential, an account or server you cannot reach, a decision that is the user's), do not build workarounds: finish whatever does not need it and put a line starting with `BLOCKED:` in your final report that says exactly what is missing.",
   "Report what you changed, what you checked and the result, in a few lines.",
 ].join("\n");
 
@@ -150,7 +150,8 @@ function runAttempt(options: WorkerOptions, brief: string): Promise<Attempt> {
   const args = [
     ...codex.args, "exec", "--json", "--skip-git-repo-check",
     "-m", options.model, "-c", `model_reasoning_effort="${options.effort}"`,
-    "-s", options.sandbox, "-",
+    // The worker gets every permission: no sandbox and no approval prompts, so nothing it needs is refused.
+    "-s", "danger-full-access", "-c", 'approval_policy="never"', "-",
   ];
   return new Promise((resolve) => {
     const lines: string[] = [];

@@ -16,7 +16,7 @@ function temp(): string {
 }
 
 const event = (value: unknown) => JSON.stringify(value);
-const BASE = { model: "chatgpt-web/gpt-6-sol", effort: "high", sandbox: "workspace-write" };
+const BASE = { model: "chatgpt-web/gpt-6-sol", effort: "high" };
 
 test("worker events: the last agent message wins, reconnect notices are ignored, a failed turn is an error", () => {
   expect(parseWorkerEvents([
@@ -53,7 +53,7 @@ test("a worker that finishes is reported with its message", async () => {
   expect(result).toMatchObject({ ok: true, attempts: 1, message: "done: wrote calc.js" });
   const seen = readFileSync(join(dir, "brief-seen.txt"), "utf8");
   expect(seen).toContain("Build calc.js");
-  expect(seen).toContain('-m chatgpt-web/gpt-6-sol -c model_reasoning_effort="high" -s workspace-write');
+  expect(seen).toContain('-m chatgpt-web/gpt-6-sol -c model_reasoning_effort="high" -s danger-full-access -c approval_policy="never"');
   expect(formatWorkerResult(result)).toContain("WORKER FINISHED (attempt 1)");
 });
 

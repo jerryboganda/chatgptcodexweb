@@ -171,6 +171,11 @@ export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
 export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 10 * 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
+/**
+ * With auto-approval on, an approval card that the click path has not cleared yet is given this long before the turn
+ * fails: the card can be on screen a moment before its buttons are ready, and failing at once cost whole worker attempts.
+ */
+export const CHATGPT_AUTO_APPROVAL_GRACE_MS = 30_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
 const CHATGPT_CONNECTOR_MENTION_QUERY = "@codex";
 const CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS = 10_000;
@@ -728,6 +733,28 @@ export async function throwIfChatGptToolApprovalRequired(scope: Pick<Locator, "l
   if (await question.count() > 0) throw chatGptToolApprovalRequiredError();
 }
 
+export function isChatGptToolApprovalRequired(error: unknown): boolean {
+  return error instanceof ChatGptWebAdapterError && error.code === "chatgpt_tool_approval_required";
+}
+
+/** True once an approval card that auto-approval could not clear has been on screen for the whole grace period. */
+export function autoApprovalGraceExpired(since: number, now: number, graceMs = CHATGPT_AUTO_APPROVAL_GRACE_MS): boolean {
+  return now - since >= graceMs;
+}
+
+/**
+ * The innermost container that holds the question and both one-time buttons. It finds a card that has none of the
+ * wrappers the main matcher knows, and it never matches a permanent action such as "Always allow".
+ */
+function inlineApprovalCard(page: Page, question: Locator): Locator {
+  return page.locator("div")
+    .filter({ has: question })
+    .filter({ has: page.getByRole("button", { name: /^Allow(?: once)?$/ }) })
+    .filter({ has: page.getByRole("button", { name: "Deny", exact: true }) })
+    .filter({ visible: true })
+    .last();
+}
+
 export async function resolveChatGptToolConfirmation(
   page: Page,
   appName: string,
@@ -737,13 +764,17 @@ export async function resolveChatGptToolConfirmation(
   onVisible?: () => Promise<void>,
   onApprovalPending?: (pending: boolean) => Promise<void>,
 ): Promise<boolean> {
+  const question = page.getByText(`Allow ChatGPT to use ${appName}?`, { exact: true });
   const dialogs = page.locator('[role="dialog"], [data-testid="tool-approval-card"], [data-codex-approval-surface="true"]')
-    .filter({ has: page.getByText(`Allow ChatGPT to use ${appName}?`, { exact: true }) })
+    .filter({ has: question })
     .filter({ visible: true });
   const dialogCount = await dialogs.count();
-  if (dialogCount === 0) return false;
-  if (dialogCount !== 1) throw new Error("ChatGPT exposed multiple approvals for the selected connector");
-  const dialog = dialogs.first();
+  if (dialogCount > 1) throw new Error("ChatGPT exposed multiple approvals for the selected connector");
+  // Auto-approval also looks for a card without the known wrappers, but only once its question is on screen.
+  const inline = dialogCount === 0 && autoApprove && await question.filter({ visible: true }).count() > 0
+    ? inlineApprovalCard(page, question) : undefined;
+  if (dialogCount === 0 && !(inline && await inline.count() > 0)) return false;
+  const dialog = inline ?? dialogs.first();
   await onVisible?.();
   if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
 
@@ -5570,6 +5601,7 @@ export class ChatGptBrowserWorker {
       await diagnostics.capture(page, "send-accepted");
 
       let lastHeartbeat = 0;
+      let approvalAlertSince: number | undefined;
       let finalText = "";
       let sawRunning = false;
       // Set once the response showed any text or activity of its own: from then on a failure can no
@@ -5656,7 +5688,18 @@ export class ChatGptBrowserWorker {
           continue;
         }
 
-        await throwIfChatGptToolApprovalRequired(page.locator(chatGptTurnContainerSelector(responseTurn.identity)));
+        try {
+          await throwIfChatGptToolApprovalRequired(page.locator(chatGptTurnContainerSelector(responseTurn.identity)));
+          approvalAlertSince = undefined;
+        } catch (error) {
+          // With auto-approval on the card is retried every pass; it only fails the turn once it has stayed unresolved.
+          if (!isChatGptToolApprovalRequired(error) || !this.config.autoApproveToolCalls) throw error;
+          approvalAlertSince ??= Date.now();
+          if (autoApprovalGraceExpired(approvalAlertSince, Date.now())) {
+            await diagnostics.capture(page, "tool-approval-unresolved", error).catch(() => {});
+            throw error;
+          }
+        }
 
         let snapshot = await this.responseDomSnapshot(responseTurn.locator, responseDomCache);
         if (!snapshot.responsePresent) {

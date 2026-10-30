@@ -55,7 +55,7 @@ export function driverContext(model: string, workerModel: string, workerEffort: 
     `(${workerModel} at ${workerEffort} effort), not by you. Only a short chat reply may stay with you.`,
     "Follow the section \"Luna drives, Sol works\" of your instructions (~/.codex/AGENTS.md): create .longrun/PROGRESS.md, write the job to .longrun/brief.md,",
     "run the worker command given there, then read the result and, for code, run the acceptance command yourself.",
-    "Keep each worker job to one small slice. You do the network, install, environment, credential and full-suite work yourself, and the worker only writes code and runs focused checks;",
+    "Keep each worker job to one small slice. You do the environment, credential and full-suite work yourself, and the worker (full access, network included) writes code and runs focused checks;",
     "a blocker nobody on this PC can fix goes under \"manual steps\" in PROGRESS.md instead of being retried.",
     "This applies even when the task looks small or is only a question about the project.",
   ].join(" ");

@@ -32,7 +32,7 @@ test("the instructions split the work: slices for the worker, network, environme
   expect(text).toContain("one slice");
   expect(text).toContain("never send a whole feature as a single job");
   expect(text).toContain("Check the environment yourself before the first worker job");
-  expect(text).toContain("You do these yourself, never the worker: downloads and installs, network access");
+  expect(text).toContain("You do these yourself, never the worker: the environment checks (network, toolchains, Docker, credentials, deployment)");
   expect(text).toContain("every full-suite or acceptance run");
   expect(text).toContain("`BLOCKED:`");
   expect(text).toContain("never send the same blocker to another worker");
