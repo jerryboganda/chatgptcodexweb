@@ -3,7 +3,7 @@ import { readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const MAX_FILES = 400;
+const MAX_FILES = 3000;
 const WALK_LIMIT = 3000;
 const SKIPPED_DIRECTORIES = new Set([
   ".git", "node_modules", ".longrun", "dist", "build", "target", "out", ".next", ".venv", "venv", "__pycache__", ".cache", "coverage",

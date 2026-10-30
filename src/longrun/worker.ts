@@ -21,6 +21,12 @@ export interface WorkerOptions {
   log?: (line: string) => void;
 }
 
+/**
+ * One attempt's time limit. An attempt that hits it is cut off and its chat is lost, so a slice should end well before;
+ * the next attempt starts from the files and the last report. Ninety minutes let one oversized job eat three of them.
+ */
+export const DEFAULT_WORKER_TIMEOUT_MINUTES = 60;
+
 export interface WorkerResult {
   ok: boolean;
   attempts: number;
@@ -94,12 +100,44 @@ export function withWorkerRules(brief: string): string {
   return `${WORKER_RULES}\n\n---\n\n${brief}`;
 }
 
+/**
+ * True for the first prompt of a `worker run` session. The driver checks a worker's work with the acceptance command,
+ * so the Stop hook must not also send the worker round that loop: it burned a whole-suite run on every stop and kept
+ * workers going for dozens of continuations.
+ */
+export const WORKER_PROMPT_START = WORKER_RULES.split("\n")[0]!;
+
+export function isWorkerPrompt(prompt: string): boolean {
+  return prompt.trimStart().startsWith(WORKER_PROMPT_START);
+}
+
+/** Codex's own log lines on stderr (`2026-10-30T17:35:15Z  WARN ...`) say nothing about why a worker failed. */
+const LOG_NOISE = /websocket|Reading additional input|^\S+Z\s+(?:TRACE|DEBUG|INFO|WARN)\b/i;
+
+export function stderrReason(stderr: string, exitCode: number | null): string {
+  const lines = stderr.trim().split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !LOG_NOISE.test(line));
+  return lines.slice(-3).join(" ") || `the worker exited with code ${exitCode ?? "none"} before it finished`;
+}
+
+const PREVIOUS_REPORT_LIMIT = 1500;
+
+/** The brief of a retry: a fresh chat knows nothing, so it is told what failed and what the last attempt reported. */
+export function retryBrief(original: string, why: string, previousReport: string): string {
+  const report = previousReport.trim();
+  const lines = [
+    `${original}\n\n---`,
+    `A previous worker attempt on this job failed (${why.slice(0, 300)}). The files in the folder may already hold part of the work: look at them first and continue from there.`,
+  ];
+  if (report) lines.push(`What that attempt last reported:\n${report.length > PREVIOUS_REPORT_LIMIT ? `…${report.slice(-PREVIOUS_REPORT_LIMIT)}` : report}`);
+  return lines.join("\n");
+}
+
 /** The `BLOCKED:` lines of a worker's report. */
 export function blockedLines(message: string): string[] {
   return message.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^BLOCKED:/.test(line));
 }
 
-function killTree(pid: number | undefined): void {
+export function killTree(pid: number | undefined): void {
   if (!pid) return;
   try {
     if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
@@ -137,7 +175,7 @@ function runAttempt(options: WorkerOptions, brief: string): Promise<Attempt> {
       const parsed = parseWorkerEvents(lines);
       resolve({
         ...parsed, exitCode, timedOut,
-        error: parsed.error || (timedOut ? "the worker ran out of time" : parsed.completed ? "" : stderr.trim().split(/\r?\n/).filter((line) => !/websocket|Reading additional input/i.test(line)).slice(-3).join(" ")),
+        error: parsed.error || (timedOut ? "the worker ran out of time" : parsed.completed ? "" : stderrReason(stderr, exitCode)),
       });
     };
     const timer = setTimeout(() => { timedOut = true; killTree(child.pid); }, options.timeoutMs);
@@ -183,7 +221,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
     }
     const why = last.error || (last.timedOut ? "the worker ran out of time" : `the worker exited with code ${last.exitCode ?? "none"}`);
     options.log?.(`worker attempt ${attempt} failed: ${why}`);
-    brief = `${options.brief}\n\n---\nA previous worker attempt on this job failed (${why.slice(0, 300)}). The files in the folder may already hold part of the work: look at them first and continue from there.`;
+    brief = retryBrief(options.brief, why, last.message);
   }
   return {
     ok: false,

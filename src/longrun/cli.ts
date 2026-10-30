@@ -1,9 +1,9 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join, resolve as resolvePath } from "node:path";
 import { stdin, stdout } from "node:process";
 import type { AppConfig } from "../config";
 import { atomicWriteFile, getConfigDir, loadConfig } from "../config";
-import { getCodexConfigPath, MANAGED_ROUTE_COMMENT } from "../codex-integration-shared";
+import { getCodexConfigPath, getCodexHome, MANAGED_ROUTE_COMMENT } from "../codex-integration-shared";
 import {
   DRIVER_START, driverInstructionsPath, ensureDriverInstructions, removeDriverBlock, type DriverEnsureResult,
 } from "./driver";
@@ -12,8 +12,10 @@ import {
   ensureLongrunHooks, inspectLongrunHooks, longrunHookCommands, removeLongrunHooks, type EnsureResult,
 } from "./hook-install";
 import { resolveProject } from "./project";
-import { formatWorkerResult, runWorker } from "./worker";
-import { loadLongrunSettings, longrunSettingsPath, saveLongrunSettings, WORKER_EFFORTS } from "./settings";
+import { DEFAULT_WORKER_TIMEOUT_MINUTES, formatWorkerResult, runWorker } from "./worker";
+import { acquireWorkerLock, describeWorker, liveWorker, stopWorker } from "./worker-lock";
+import { formatHealth, scanSessions } from "./health";
+import { loadLongrunSettings, longrunSettingsPath, saveLongrunSettings, WORKER_EFFORTS, WORKER_SANDBOXES } from "./settings";
 
 const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 
@@ -123,8 +125,23 @@ function describeProject(directory: string): string[] {
 
 const WORKER_USAGE = `Usage: codex-chatgpt-web worker run [--brief-file <file>] [--effort <medium|high|xhigh>] [--model <chatgpt-web/...>]
                                   [--cwd <folder>] [--timeout-minutes <n>] [--attempts <n>]
+       codex-chatgpt-web worker status [--cwd <folder>]
+       codex-chatgpt-web worker stop [--cwd <folder>]
 
-Runs one job on the ChatGPT web worker and prints its report. The brief is read from --brief-file, or from stdin.`;
+run     runs one job on the ChatGPT web worker and prints its report. The brief is read from --brief-file, or from stdin.
+        Only one worker runs per folder; the last report is also saved to .longrun/worker-report.md.
+status  says whether a worker is running in the folder.
+stop    ends the worker that is running in the folder, for example one left over from an interrupted turn.`;
+
+const WORKER_REPORT = join(".longrun", "worker-report.md");
+
+/** The driver may be interrupted while its worker runs; the report is kept so the next turn can still read it. */
+function saveWorkerReport(cwd: string, body: string): void {
+  try {
+    mkdirSync(join(cwd, ".longrun"), { recursive: true });
+    writeFileSync(join(cwd, WORKER_REPORT), `# Last worker report (finished ${new Date().toISOString()})\n\n${body}\n`);
+  } catch { /* The report is a convenience: the worker's output already went to its caller. */ }
+}
 
 function optionValue(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -137,12 +154,25 @@ function optionValue(args: string[], name: string): string | undefined {
 /** `worker run`: what a Luna driver calls to hand one job to the ChatGPT web worker. */
 export async function workerCommand(args: string[]): Promise<void> {
   const action = args.shift();
-  if (action !== "run") {
+  if (action !== "run" && action !== "status" && action !== "stop") {
     stdout.write(`${WORKER_USAGE}\n`);
     if (action !== undefined && action !== "help" && action !== "--help") throw new Error(`Unknown worker action: ${action}`);
     return;
   }
   const home = getConfigDir();
+  if (action === "status" || action === "stop") {
+    const folder = resolvePath(optionValue(args, "--cwd") ?? process.cwd());
+    if (action === "stop") {
+      const stopped = stopWorker(folder, home);
+      stdout.write(stopped ? `Stopped the worker in ${folder} (${describeWorker(stopped)}).\n` : `No worker was running in ${folder}.\n`);
+      return;
+    }
+    const running = liveWorker(folder, home);
+    stdout.write(running ? `A worker is running in ${folder}: ${describeWorker(running)}.\n` : `No worker is running in ${folder}.\n`);
+    const report = join(folder, WORKER_REPORT);
+    if (existsSync(report)) stdout.write(`Last report: ${report} (${new Date(statSync(report).mtimeMs).toISOString()})\n`);
+    return;
+  }
   const settings = loadLongrunSettings(home);
   const effort = (optionValue(args, "--effort") ?? settings.workerEffort).toLowerCase();
   if (!WORKER_EFFORTS.some((item) => item === effort)) throw new Error(`--effort must be one of ${WORKER_EFFORTS.join(", ")}`);
@@ -170,21 +200,42 @@ export async function workerCommand(args: string[]): Promise<void> {
   if (settings.enabled === false || settings.driver === false) {
     appendLog(home, "worker_run_while_off", {});
   }
-  const result = await runWorker({
-    cwd, brief, model, effort, sandbox: settings.workerSandbox,
-    timeoutMs: Math.round(number("--timeout-minutes", 90, 1, 600) * 60_000),
-    attempts: Math.round(number("--attempts", 3, 1, 10)),
-    heartbeatMs: 60_000,
-    log: (line) => stdout.write(`${line}\n`),
-  });
-  appendLog(home, "worker_finished", { ok: result.ok, attempts: result.attempts });
-  stdout.write(`${formatWorkerResult(result)}\n`);
-  if (!result.ok) process.exitCode = 2;
+  const timeoutMs = Math.round(number("--timeout-minutes", DEFAULT_WORKER_TIMEOUT_MINUTES, 1, 600) * 60_000);
+  const attempts = Math.round(number("--attempts", 3, 1, 10));
+  const held = acquireWorkerLock({ cwd, model, effort }, home);
+  if ("busy" in held) {
+    appendLog(home, "worker_busy_refused", { pid: held.busy.pid });
+    stdout.write([
+      `WORKER BUSY: another worker is still running in this folder (${describeWorker(held.busy)}), so no second one was started.`,
+      `It is often left over from an interrupted turn. Wait for it, then read ${WORKER_REPORT}; or end it with this command's \`stop\` action instead of \`run\` if you no longer need its result.`,
+    ].join("\n") + "\n");
+    process.exitCode = 3;
+    return;
+  }
+  const beat = setInterval(held.beat, 60_000);
+  const startedAt = Date.now();
+  try {
+    const result = await runWorker({
+      cwd, brief, model, effort, sandbox: settings.workerSandbox, timeoutMs, attempts,
+      heartbeatMs: 60_000,
+      log: (line) => stdout.write(`${line}\n`),
+    });
+    appendLog(home, "worker_finished", { ok: result.ok, attempts: result.attempts, minutes: Math.round((Date.now() - startedAt) / 60_000) });
+    const report = formatWorkerResult(result);
+    saveWorkerReport(cwd, report);
+    stdout.write(`${report}\n`);
+    if (!result.ok) process.exitCode = 2;
+  } finally {
+    clearInterval(beat);
+    held.release();
+  }
 }
 
-const USAGE = `Usage: codex-chatgpt-web longrun [status [folder] | on | off | install | uninstall | worker <effort> | driver on|off]
+const USAGE = `Usage: codex-chatgpt-web longrun [status [folder] | health [--hours <n>] | on | off | install | uninstall | worker <effort> | driver on|off | sandbox <mode>]
 
   status [folder]   show whether long-run is on, whether Codex has the hooks, and which command checks a folder
+  health [--hours]  are the long runs of the last day alive? per project: driver, worker, and what looks wrong
+  sandbox <mode>    the worker's sandbox: ${WORKER_SANDBOXES.join(" or ")} (the default keeps its writes inside the project)
   on / off          turn the automatic "keep going until the check passes" behaviour on or off
   install           (re)install the Codex hooks now; they are also kept in place whenever the bridge starts
   uninstall         remove the Codex hooks and switch long-run off
@@ -218,8 +269,30 @@ export async function longrunCommand(args: string[]): Promise<void> {
     } catch { /* Status is informational. */ }
     write(`Luna drives, Sol works: ${settings.driver ? "ON" : "OFF"}. Worker: ${settings.workerModel} at ${settings.workerEffort} effort. Instructions in ~/.codex/AGENTS.md: ${driverBlock}.`);
     for (const line of describeProject(folder)) write(line);
+    write(`Worker sandbox: ${settings.workerSandbox}${settings.workerSandbox === "workspace-write" ? " (writes stay in the project; the Windows sandbox can block tools that use caches or rename folders elsewhere)" : " (full access, like the driver)"}.`);
     write(`Limits per request: ${settings.maxContinuations} automatic continuations, ${settings.maxHours} h, check timeout ${settings.acceptanceTimeoutMinutes} min.`);
     write(`Settings file: ${longrunSettingsPath(home)}`);
+    return;
+  }
+
+  if (action === "health") {
+    const raw = optionValue(args, "--hours");
+    const hours = raw === undefined ? 24 : Number(raw);
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 168) throw new Error("--hours must be a number from 1 to 168");
+    const settings = loadLongrunSettings(home);
+    const now = Date.now();
+    for (const line of formatHealth(scanSessions(getCodexHome(), now, settings, { hours }), now, (cwd) => liveWorker(cwd, home))) write(line);
+    return;
+  }
+
+  if (action === "sandbox") {
+    const mode = WORKER_SANDBOXES.find((item) => item === (args.shift() ?? "").toLowerCase());
+    if (!mode) throw new Error(`Usage: codex-chatgpt-web longrun sandbox <${WORKER_SANDBOXES.join("|")}>`);
+    saveLongrunSettings({ workerSandbox: mode }, home);
+    write(mode === "danger-full-access"
+      ? "The worker now runs with full access, like the Luna driver: no sandbox limits its writes or its network. Only use this for projects you trust."
+      : "The worker now runs in the workspace-write sandbox: it can write inside the project only.");
+    write("The next worker job uses it.");
     return;
   }
 

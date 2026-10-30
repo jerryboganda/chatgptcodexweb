@@ -65,16 +65,20 @@ when the acceptance command passes, not when Luna says so.
 The bridge installs the instructions as a marked block in `~/.codex/AGENTS.md` (only when the route is installed). The
 block asks something only of a main-agent Luna; any other model or subagent is told to ignore it. Luna hands a job over
 by running `codex-chatgpt-web worker run --brief-file .longrun/brief.md`, a plain command (the block holds its exact
-path). It starts `codex exec` on the worker model in a new chat, so the worker's own Stop hook also keeps it going until
-the acceptance command passes. If that chat breaks, up to three fresh chats are tried, each told what went wrong. Codex's
+path). It starts `codex exec` on the worker model in a new chat. The worker is not held to the acceptance command (its
+Stop hook leaves it alone): Luna checks its work, so a worker never reruns the whole suite or loops on a check it cannot
+pass. If that chat breaks or runs out of its hour, up to three fresh chats are tried, each told what went wrong and what
+the last one reported. Only one worker runs per folder: a second `worker run` prints `WORKER BUSY` (stopping a Luna turn
+does not stop the worker it started), `worker status` and `worker stop` show or end it, and every report is also saved in
+`.longrun/worker-report.md`. While a worker runs, Luna's Stop hook waits for it before running the acceptance command, so
+the check never builds beside the worker. Codex's
 built-in subagent tool is not used: it only starts agents when the user asks for them by name, so it cannot be relied on.
 
 Who does what (learned from real 10-hour runs that stalled on jobs the worker could not do):
 
 - **The worker** writes and fixes code in one small slice per job and runs only focused checks. Its sandbox has no
   network and no credentials, so every brief starts with rules telling it not to build workarounds for those. It puts a
-  line starting with `BLOCKED:` in its report instead, and its Stop hook then lets it stop right away rather than
-  looping on an acceptance command it cannot pass.
+  line starting with `BLOCKED:` in its report instead, which Luna then clears itself or records as a manual step.
 - **Luna** does the network, downloads and installs, toolchain and environment setup, credential and Docker checks, and
   every full-suite or acceptance run. It checks the environment before the first job and records it in PROGRESS.md.
 - **Manual steps**: something nobody on the PC can fix (credentials, a server, a decision) goes under "manual steps" in
@@ -87,11 +91,22 @@ Who does what (learned from real 10-hour runs that stalled on jobs the worker co
 codex-chatgpt-web longrun worker xhigh     # worker effort: medium, high or xhigh (default xhigh)
 codex-chatgpt-web longrun driver off       # Luna works alone again; `driver on` switches it back
 codex-chatgpt-web longrun status           # shows the driver, the worker and whether the block is installed
+codex-chatgpt-web longrun health           # are the runs of the last day alive? per project, and what looks wrong
+codex-chatgpt-web longrun sandbox danger-full-access   # give the worker full access, like Luna (see below)
 ```
 
 Open a new Codex chat after changing either setting. Whether Luna hands the work over is its own decision, guided by
 the block; the acceptance command is what enforces completion. The worker's sandbox is `workerSandbox` in
 `~/.codex-chatgpt-web/longrun.json` (`workspace-write` by default, or `danger-full-access`).
+
+`longrun health` reads Codex's own session files and says, per project, whether the Luna driver and the worker are working,
+finished or interrupted, and flags a driver that went silent in the middle of a turn (Codex restarted or lost its
+connection: open that chat and send "continue") and a worker that outlived its driver.
+
+The default `workspace-write` sandbox keeps the worker's writes inside the project, but on Windows it also blocks tools
+that write caches or rename folders elsewhere: real runs saw hundreds of `EPERM`, `EACCES` and "Access is denied"
+errors in worker sessions against a handful in Luna's (which has full access). If workers keep failing that way, `longrun
+sandbox danger-full-access` removes the limit; it also removes the protection, so use it for projects you trust.
 
 The rest of this page describes the **unattended supervisor**, a separate script for jobs you start yourself.
 

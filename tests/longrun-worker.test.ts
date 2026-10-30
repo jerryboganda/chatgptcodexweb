@@ -3,7 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workerCommandLine } from "../src/longrun/cli";
-import { blockedLines, findCodex, formatWorkerResult, parseWorkerEvents, runWorker, WORKER_RULES, withWorkerRules } from "../src/longrun/worker";
+import {
+  blockedLines, findCodex, formatWorkerResult, isWorkerPrompt, parseWorkerEvents, retryBrief, runWorker, stderrReason, WORKER_RULES, withWorkerRules,
+} from "../src/longrun/worker";
 
 const cleanup: string[] = [];
 afterEach(() => { for (const path of cleanup.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -113,4 +115,45 @@ test("a reported blocker is shown to the driver with what to do about it", () =>
   expect(text).toContain("The worker hit a blocker it cannot clear");
   expect(text).toContain("manual steps");
   expect(formatWorkerResult({ ok: true, attempts: 1, message: "fine", changed: [] })).not.toContain("blocker");
+});
+
+test("a retry brief carries what the failed attempt last reported, and only its end when that is long", async () => {
+  const text = retryBrief("Do the job", "ChatGPT surface lost", "Changed parser.ts, tests not run yet");
+  expect(text.startsWith("Do the job\n\n---\nA previous worker attempt on this job failed (ChatGPT surface lost)")).toBe(true);
+  expect(text).toContain("What that attempt last reported:\nChanged parser.ts, tests not run yet");
+  expect(retryBrief("Do the job", "x", "")).not.toContain("last reported");
+  const long = retryBrief("Do the job", "x", `start-marker ${"y".repeat(3000)} end-marker`);
+  expect(long).toContain("end-marker");
+  expect(long).not.toContain("start-marker");
+  const dir = temp();
+  const codex = fakeCodex(dir, `
+    const fs = require("node:fs"); const counter = process.cwd() + "/count.txt";
+    let input = ""; process.stdin.on("data", (c) => input += c);
+    process.stdin.on("end", () => {
+      const n = fs.existsSync(counter) ? Number(fs.readFileSync(counter, "utf8")) + 1 : 1;
+      fs.writeFileSync(counter, String(n)); fs.writeFileSync(process.cwd() + "/brief-" + n + ".txt", input);
+      if (n === 1) {
+        console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "half done: parser.ts rewritten" } }));
+        console.log(JSON.stringify({ type: "turn.failed", error: { message: "ChatGPT stopped responding" } })); process.exit(1);
+      }
+      console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "finished" } }));
+      console.log(JSON.stringify({ type: "turn.completed" }));
+    });`);
+  const result = await runWorker({ cwd: dir, brief: "Do the job", timeoutMs: 20_000, attempts: 2, codex, ...BASE });
+  expect(result).toMatchObject({ ok: true, attempts: 2 });
+  expect(readFileSync(join(dir, "brief-2.txt"), "utf8")).toContain("What that attempt last reported:\nhalf done: parser.ts rewritten");
+});
+
+test("Codex log lines on stderr are not reported as the reason a worker failed", () => {
+  const noise = "2026-10-30T17:35:15.871469Z  WARN codex_sandboxing::violation: recorded sandbox violation: resource=filesystem";
+  expect(stderrReason(`${noise}\nthe real problem`, 1)).toBe("the real problem");
+  expect(stderrReason(`${noise}\nReading additional input from stdin...`, 7)).toBe("the worker exited with code 7 before it finished");
+  expect(stderrReason("", null)).toBe("the worker exited with code none before it finished");
+});
+
+test("only a prompt that starts with the worker rules is a worker prompt", () => {
+  expect(isWorkerPrompt(withWorkerRules("Fix it"))).toBe(true);
+  expect(isWorkerPrompt(`  \n${withWorkerRules("Fix it")}`)).toBe(true);
+  expect(isWorkerPrompt("Fix it")).toBe(false);
+  expect(isWorkerPrompt(`Please note: ${WORKER_RULES}`)).toBe(false);
 });

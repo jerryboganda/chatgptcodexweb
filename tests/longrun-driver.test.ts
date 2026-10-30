@@ -40,6 +40,15 @@ test("the instructions split the work: slices for the worker, network, environme
   expect(text).toContain("Choose an acceptance command that can really pass on this PC");
 });
 
+test("the instructions tell Luna to wait with long polls and never start a second worker in a folder", () => {
+  const text = driverInstructions(SETTINGS);
+  expect(text).toContain("long polls (`yield_time_ms` 300000)");
+  expect(text).toContain("`WORKER BUSY`");
+  expect(text).toContain("never start a second one");
+  expect(text).toContain("`stop` instead of `run`");
+  expect(text).toContain("`.longrun/worker-report.md`");
+});
+
 test("the block is added after existing text, replaced in place and removed without touching the rest", () => {
   const mine = "# My notes\n\nAlways use tabs.\n";
   const added = upsertDriverBlock(mine, SETTINGS);
@@ -98,4 +107,10 @@ test("the instructions carry the exact worker command and do not point at the su
   const block = upsertDriverBlock("", SETTINGS, "node cli.js worker run");
   expect(upsertDriverBlock(block.text, SETTINGS, "node cli.js worker run").changed).toBe(false);
   expect(upsertDriverBlock(block.text, SETTINGS, "node other.js worker run").changed).toBe(true);
+});
+
+test("the instructions warn that the Stop hook runs the check in a plain shell, so its setup belongs in a script", () => {
+  const text = driverInstructions(SETTINGS);
+  expect(text).toContain("runs the acceptance command in a plain shell");
+  expect(text).toContain("`.longrun/acceptance.cmd`");
 });

@@ -7,6 +7,11 @@ import { resolveProject, type ProjectPlan } from "./project";
 import { loadLongrunSettings, longrunDirectory, type LongrunSettings } from "./settings";
 import { mayRunProjectCommands } from "./trust";
 import { freshState, loadState, pruneStates, saveState, validSessionId, type LongrunSessionState } from "./state";
+import { isWorkerPrompt } from "./worker";
+import { describeWorker, waitForWorker, type WorkerLock } from "./worker-lock";
+
+/** How long a driver's Stop hook waits for a worker that is still running before it sends the driver back. */
+const WORKER_WAIT_MS = 20 * 60_000;
 
 /** Marks the feedback this feature injects, so the prompt hook can tell it from a person's message. */
 export const LONGRUN_MARK = "[long-run]";
@@ -65,6 +70,8 @@ export interface HookDeps {
   /** May project commands run here? (a folder trusted in Codex, or a session that already runs without approvals) */
   mayRun: (cwd: string, permissionMode: unknown) => boolean;
   acceptance: (command: string, cwd: string, options: { timeoutMs: number; tailChars: number }) => Promise<AcceptanceResult>;
+  /** Wait for the worker running in this folder (at most the given time); the one still running afterwards, if any. */
+  waitForWorker?: (cwd: string, maxWaitMs: number) => Promise<WorkerLock | undefined>;
   log: (event: string, detail?: Record<string, unknown>) => void;
 }
 
@@ -77,6 +84,7 @@ export function defaultDeps(home = getConfigDir()): HookDeps {
     fingerprint: workTreeFingerprint,
     mayRun: (cwd, permissionMode) => mayRunProjectCommands(cwd, permissionMode),
     acceptance: runAcceptanceCommand,
+    waitForWorker: (cwd, maxWaitMs) => waitForWorker(cwd, home, maxWaitMs),
     log: (event, detail) => appendLog(home, event, detail),
   };
 }
@@ -127,6 +135,17 @@ function minutes(ms: number): number {
   return Math.round(ms / 60_000);
 }
 
+/**
+ * A tool the check starts is not on PATH. The hook runs the check in a plain shell, without the PATH additions and
+ * environment variables the model set up in its own shell, so this is often the check's shell and not the code.
+ */
+export const MISSING_TOOL = /Executable not found in \$PATH|is not recognized as an internal or external command|The term '[^']+' is not recognized|: command not found|\bspawn\S* \S+ ENOENT|errno: -4058/i;
+
+const MISSING_TOOL_HINT = [
+  "This looks like a tool missing from the shell this check runs in, which is a plain shell without the PATH additions or environment variables you set up in your own shell.",
+  "Run the command in your own shell: if it passes there, put that setup into a script (for example .longrun/acceptance.cmd) and make the script the acceptance command (the `acceptance:` line in AGENTS.md); if the tool really is missing, install it or record it under \"manual steps\" in PROGRESS.md.",
+].join(" ");
+
 function blockReason(options: {
   attempt: number; max: number; command: string; result: AcceptanceResult; elapsedMs: number; driver: boolean;
 }): string {
@@ -140,11 +159,12 @@ function blockReason(options: {
     "```",
     result.tail || "(no output)",
     "```",
+    MISSING_TOOL.test(result.tail) ? MISSING_TOOL_HINT : "",
     options.driver
       ? "You are the driver: give a code fix to a worker with the worker command from your instructions, one small slice at a time, then run this command yourself. A network, install, environment or credential problem is yours to fix, or to record under \"manual steps\" in PROGRESS.md if nobody on this PC can. Do not stop until it exits with code 0."
       : "Find the cause and fix it, then check again. Do not stop until this command exits with code 0.",
     "If you are sure the check itself is wrong or you cannot go on without the user, say exactly why in your answer instead of stopping silently.",
-  ].join("\n");
+  ].filter((line) => line !== "").join("\n");
 }
 
 /** UserPromptSubmit: a new request from the user starts a new budget and a new baseline. */
@@ -159,9 +179,17 @@ export function handlePrompt(input: PromptHookInput, deps: HookDeps): HookOutput
     if (!loadState(sessionId, deps.home)) saveState(freshState(sessionId, deps.fingerprint(cwd), deps.now()), deps.home);
     return undefined;
   }
+  // A worker job is checked by the driver that started it: remember the session so its Stop hook stays out of the way.
+  if (isWorkerPrompt(text(input.prompt))) {
+    saveState({ ...freshState(sessionId, "worker", deps.now()), worker: true }, deps.home);
+    deps.log("worker_session", { session: sessionId });
+    return undefined;
+  }
   const previous = loadState(sessionId, deps.home);
   const state = freshState(sessionId, deps.fingerprint(cwd), deps.now());
   state.hintShown = previous?.hintShown === true;
+  // Any later prompt in a worker's session (a steering message, a resumed turn) keeps it a worker.
+  if (previous?.worker) state.worker = true;
   saveState(state, deps.home);
   pruneStates(deps.home, deps.now());
   deps.log("task_started", { session: sessionId });
@@ -181,8 +209,11 @@ export async function handleStop(input: StopHookInput, deps: HookDeps): Promise<
   const plan = deps.project(cwd);
   if (!plan.enabled) return undefined;
 
-  const before = deps.fingerprint(cwd);
   let state = loadState(sessionId, deps.home);
+  // A `worker run` session never runs the acceptance loop: the driver checks its work, and a worker held to the whole
+  // check kept going for dozens of continuations and ran the full test suite on every stop.
+  if (state?.worker) return undefined;
+  const before = deps.fingerprint(cwd);
   if (!state) {
     // The session began before the hooks existed, so the start of this turn is unknown: begin tracking now.
     saveState(freshState(sessionId, before, deps.now()), deps.home);
@@ -233,6 +264,19 @@ export async function handleStop(input: StopHookInput, deps: HookDeps): Promise<
   };
   if (state.continuations >= maxContinuations) return giveUp(`the limit of ${maxContinuations} automatic continuations was reached`);
   if (elapsedMs > settings.maxHours * 3_600_000) return giveUp(`the ${settings.maxHours} hour budget for this request is used up`);
+
+  // A worker left running (for instance after the turn that started it was interrupted) would build in the same
+  // folder as the check; wait for it, and send the driver back to it only if it outlasts the wait.
+  const running = isDriver(input.model, settings) ? await deps.waitForWorker?.(cwd, WORKER_WAIT_MS) : undefined;
+  if (running) {
+    state = { ...state, continuations: state.continuations + 1 };
+    saveState(state, deps.home);
+    deps.log("worker_busy", { session: sessionId, continuation: state.continuations });
+    return {
+      decision: "block",
+      reason: `${LONGRUN_MARK} A worker is still running in this folder (${describeWorker(running, deps.now())}), so the acceptance check was not run: it would collide with the worker's own builds. Wait for the worker command to finish and read its report in .longrun/worker-report.md, or stop it with the worker command's \`stop\` action if you no longer need it. Then finish your turn.`,
+    };
+  }
 
   const timeoutMinutes = plan.timeoutMinutes ?? settings.acceptanceTimeoutMinutes;
   const result = await deps.acceptance(plan.acceptance.command, cwd, {

@@ -5,11 +5,13 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { runAcceptance, tailOf, failureSignature } from "../src/longrun/acceptance";
 import { workTreeFingerprint } from "../src/longrun/fingerprint";
-import { LONGRUN_MARK, endsWithQuestion, handlePrompt, handleStop, type HookDeps } from "../src/longrun/hooks";
+import { LONGRUN_MARK, MISSING_TOOL, endsWithQuestion, handlePrompt, handleStop, type HookDeps } from "../src/longrun/hooks";
 import { parseAcceptanceLine, resolveProject } from "../src/longrun/project";
 import { DEFAULT_LONGRUN_SETTINGS, loadLongrunSettings, normalizeSettings, saveLongrunSettings } from "../src/longrun/settings";
 import { loadState, saveState, freshState } from "../src/longrun/state";
 import { insideTrustedProject, mayRunProjectCommands, trustedProjects } from "../src/longrun/trust";
+import { withWorkerRules } from "../src/longrun/worker";
+import type { WorkerLock } from "../src/longrun/worker-lock";
 
 const cleanup: string[] = [];
 afterEach(() => { for (const path of cleanup.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -488,4 +490,63 @@ test("each request to a Luna driver carries the standing request to use the work
   expect(handlePrompt(prompt("Build", { model: "gpt-6-luna", agent_id: "sub" }), fakeDeps().deps)).toBeUndefined();
   const off = fakeDeps({ settings: () => normalizeSettings({ driver: false }) });
   expect(handlePrompt(prompt("Build", { model: "gpt-6-luna" }), off.deps)).toBeUndefined();
+});
+
+test("a worker run session is never sent round the acceptance loop, a direct ChatGPT web chat still is", async () => {
+  const worker = fakeDeps({ fingerprints: ["a", "b", "b", "b"], results: [{ ok: false, tail: "whole check failed" }] });
+  expect(handlePrompt(prompt(withWorkerRules("Fix the parser")), worker.deps)).toBeUndefined();
+  expect(loadState(SESSION, worker.home)).toMatchObject({ worker: true });
+  expect(worker.calls.log).toContain("worker_session");
+  expect(await handleStop(stop({ last_assistant_message: "Fixed it." }), worker.deps)).toBeUndefined();
+  expect(worker.calls.acceptance).toBe(0);
+  const direct = fakeDeps({ fingerprints: ["a", "b", "b", "b"], results: [{ ok: false, tail: "whole check failed" }] });
+  handlePrompt(prompt("Fix the parser"), direct.deps);
+  expect(loadState(SESSION, direct.home)?.worker).toBe(false);
+  expect(await handleStop(stop({ last_assistant_message: "Fixed it." }), direct.deps)).toMatchObject({ decision: "block" });
+  expect(direct.calls.acceptance).toBe(1);
+});
+
+const RUNNING: WorkerLock = { pid: 4242, cwd: "C:/p", startedAt: 1_000_000 - 7 * 60_000, heartbeatAt: 1_000_000, model: "chatgpt-web/gpt-6-sol", effort: "xhigh" };
+
+test("a driver whose worker is still running is sent back to it instead of running the check beside it", async () => {
+  const busy = fakeDeps({ fingerprints: ["a", "b", "b", "b"], results: [{ ok: false }], waitForWorker: async () => RUNNING });
+  handlePrompt(prompt("Build it", { model: "gpt-6-luna" }), busy.deps);
+  const output = await handleStop(stop({ model: "gpt-6-luna" }), busy.deps);
+  expect(output).toMatchObject({ decision: "block" });
+  const reason = (output as { reason: string }).reason;
+  expect(reason).toContain("A worker is still running in this folder");
+  expect(reason).toContain("pid 4242");
+  expect(reason).toContain(".longrun/worker-report.md");
+  expect(busy.calls.acceptance).toBe(0);
+  expect(loadState(SESSION, busy.home)?.continuations).toBe(1);
+  expect(busy.calls.log).toContain("worker_busy");
+  const free = fakeDeps({ fingerprints: ["a", "b", "b", "b"], results: [{ ok: true }], waitForWorker: async () => undefined });
+  handlePrompt(prompt("Build it", { model: "gpt-6-luna" }), free.deps);
+  expect(await handleStop(stop({ model: "gpt-6-luna" }), free.deps)).toBeUndefined();
+  expect(free.calls.acceptance).toBe(1);
+});
+
+test("a check that fails because a tool is missing from its plain shell says so and points at an acceptance script", async () => {
+  const missing = fakeDeps({ fingerprints: ["a", "b", "b", "b"], results: [{ ok: false, tail: 'error: Executable not found in $PATH: "go"\n      code: "ENOENT"' }] });
+  handlePrompt(prompt("Build it", { model: "gpt-6-luna" }), missing.deps);
+  const reason = ((await handleStop(stop({ model: "gpt-6-luna" }), missing.deps)) as { reason: string }).reason;
+  expect(reason).toContain("a tool missing from the shell this check runs in");
+  expect(reason).toContain(".longrun/acceptance.cmd");
+  expect(reason).not.toContain("\n\n");
+  const code = fakeDeps({ fingerprints: ["a", "b", "b", "b"], results: [{ ok: false, tail: "expected 3 but got 4" }] });
+  handlePrompt(prompt("Build it", { model: "gpt-6-luna" }), code.deps);
+  expect(((await handleStop(stop({ model: "gpt-6-luna" }), code.deps)) as { reason: string }).reason).not.toContain("missing from the shell");
+  for (const line of ["'go' is not recognized as an internal or external command", "bash: go: command not found", "spawn go ENOENT", "The term 'go' is not recognized as a name of a cmdlet"]) {
+    expect(MISSING_TOOL.test(line)).toBe(true);
+  }
+  expect(MISSING_TOOL.test("1 test failed: file not found fixtures/a.json")).toBe(false);
+});
+
+test("a later prompt in a worker's session leaves it a worker", async () => {
+  const worker = fakeDeps({ fingerprints: ["a", "b", "b", "b"], results: [{ ok: false }] });
+  handlePrompt(prompt(withWorkerRules("Fix the parser")), worker.deps);
+  handlePrompt(prompt("Also rename the helper"), worker.deps);
+  expect(loadState(SESSION, worker.home)?.worker).toBe(true);
+  expect(await handleStop(stop(), worker.deps)).toBeUndefined();
+  expect(worker.calls.acceptance).toBe(0);
 });

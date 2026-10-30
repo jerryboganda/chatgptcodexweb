@@ -20,6 +20,8 @@ export interface LongrunSessionState {
   gaveUp: boolean;
   /** The "no acceptance command" hint was already shown for this session. */
   hintShown: boolean;
+  /** A `worker run` job: the driver checks its work, so the Stop hook leaves it alone. */
+  worker?: boolean;
   updatedAt: number;
 }
 
@@ -56,6 +58,7 @@ export function loadState(sessionId: string, home = getConfigDir()): LongrunSess
       sameFailure: Math.max(0, Math.round(Number(value.sameFailure) || 0)),
       gaveUp: value.gaveUp === true,
       hintShown: value.hintShown === true,
+      worker: value.worker === true,
     };
   } catch {
     return undefined;
