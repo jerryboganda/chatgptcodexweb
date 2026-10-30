@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workerCommandLine } from "../src/longrun/cli";
-import { findCodex, formatWorkerResult, parseWorkerEvents, runWorker } from "../src/longrun/worker";
+import { blockedLines, findCodex, formatWorkerResult, parseWorkerEvents, runWorker, WORKER_RULES, withWorkerRules } from "../src/longrun/worker";
 
 const cleanup: string[] = [];
 afterEach(() => { for (const path of cleanup.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -69,7 +69,7 @@ test("a broken chat is retried in a fresh one and the second brief names the fai
     });`);
   const result = await runWorker({ cwd: dir, brief: "Do the job", timeoutMs: 20_000, attempts: 3, codex, ...BASE });
   expect(result).toMatchObject({ ok: true, attempts: 2, message: "recovered" });
-  expect(readFileSync(join(dir, "brief-1.txt"), "utf8")).toBe("Do the job");
+  expect(readFileSync(join(dir, "brief-1.txt"), "utf8")).toBe(withWorkerRules("Do the job"));
   const second = readFileSync(join(dir, "brief-2.txt"), "utf8");
   expect(second).toContain("Do the job");
   expect(second).toContain("A previous worker attempt on this job failed (ChatGPT surface lost)");
@@ -95,4 +95,22 @@ test("findCodex honours the override and the command line is quoted for the shel
     .toBe("& 'C:/a b/bun.exe' 'C:/a b/cli.js' '--home' 'C:/h' 'worker' 'run'");
   expect(workerCommandLine(["/opt/it's/bun", "/opt/cli.js"], "/home/u", "linux"))
     .toBe(`'/opt/it'\\''s/bun' '/opt/cli.js' '--home' '/home/u' 'worker' 'run'`);
+});
+
+test("every worker brief starts with the rules that keep a worker to one slice and hand blockers back", () => {
+  const brief = withWorkerRules("Fix the parser");
+  expect(brief.startsWith(WORKER_RULES)).toBe(true);
+  expect(brief.endsWith("Fix the parser")).toBe(true);
+  expect(WORKER_RULES).toContain("one small slice");
+  expect(WORKER_RULES).toContain("whole test suite");
+  expect(WORKER_RULES).toContain("`BLOCKED:`");
+});
+
+test("a reported blocker is shown to the driver with what to do about it", () => {
+  expect(blockedLines("Done the code.\n  BLOCKED: no network for the go module\nChecked foo.")).toEqual(["BLOCKED: no network for the go module"]);
+  expect(blockedLines("nothing blocked here")).toEqual([]);
+  const text = formatWorkerResult({ ok: true, attempts: 1, message: "Wrote it.\nBLOCKED: Docker is not installed", changed: [] });
+  expect(text).toContain("The worker hit a blocker it cannot clear");
+  expect(text).toContain("manual steps");
+  expect(formatWorkerResult({ ok: true, attempts: 1, message: "fine", changed: [] })).not.toContain("blocker");
 });

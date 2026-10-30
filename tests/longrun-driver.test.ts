@@ -27,6 +27,19 @@ test("the instructions name the worker model and effort and only ask something o
   expect(driverInstructions({ ...SETTINGS, workerEffort: "xhigh" })).toContain("at `xhigh` effort");
 });
 
+test("the instructions split the work: slices for the worker, network, environment and full suites for Luna, manual steps for the user", () => {
+  const text = driverInstructions(SETTINGS);
+  expect(text).toContain("one slice");
+  expect(text).toContain("never send a whole feature as a single job");
+  expect(text).toContain("Check the environment yourself before the first worker job");
+  expect(text).toContain("You do these yourself, never the worker: downloads and installs, network access");
+  expect(text).toContain("every full-suite or acceptance run");
+  expect(text).toContain("`BLOCKED:`");
+  expect(text).toContain("never send the same blocker to another worker");
+  expect(text).toContain('"manual steps"');
+  expect(text).toContain("Choose an acceptance command that can really pass on this PC");
+});
+
 test("the block is added after existing text, replaced in place and removed without touching the rest", () => {
   const mine = "# My notes\n\nAlways use tabs.\n";
   const added = upsertDriverBlock(mine, SETTINGS);

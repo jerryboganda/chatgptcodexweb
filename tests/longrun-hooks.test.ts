@@ -444,6 +444,18 @@ test("a Luna driver session is supervised like a web model and is told to hand t
   expect((await handleStop(stop(), web.deps) as { reason: string }).reason).not.toContain("You are the driver");
 });
 
+test("a worker that reports a blocker is not sent round the acceptance loop, a driver's own report is not affected", async () => {
+  const blocked = fakeDeps({ fingerprints: ["a", "b", "b", "b"], results: [{ ok: false, tail: "no go" }] });
+  handlePrompt(prompt("Build it"), blocked.deps);
+  expect(await handleStop(stop({ last_assistant_message: "Wrote the handler.\nBLOCKED: Go 1.26 is not installed" }), blocked.deps)).toBeUndefined();
+  expect(blocked.calls.acceptance).toBe(0);
+  const luna = fakeDeps({ fingerprints: ["a", "b", "b", "b"], results: [{ ok: false, tail: "no go" }] });
+  handlePrompt(prompt("Build it", { model: "gpt-6-luna" }), luna.deps);
+  const output = await handleStop(stop({ model: "gpt-6-luna", last_assistant_message: "BLOCKED: x" }), luna.deps);
+  expect(output).toMatchObject({ decision: "block" });
+  expect((output as { reason: string }).reason).toContain("manual steps");
+});
+
 test("Luna is left alone when the driver setting is off", async () => {
   const off = fakeDeps({ settings: () => normalizeSettings({ driver: false }), fingerprints: ["a", "b", "b"], results: [{ ok: false }] });
   handlePrompt(prompt("Build it", { model: "gpt-6-luna" }), off.deps);

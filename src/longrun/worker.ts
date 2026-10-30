@@ -78,6 +78,27 @@ export function parseWorkerEvents(lines: string[]): Pick<Attempt, "completed" | 
   return { completed, message, error };
 }
 
+/**
+ * Put before every brief. The worker's sandbox has no network and no credentials, so a job that needs them used to
+ * burn an hour on workarounds; the driver handles those, and the worker is told to hand them back at once.
+ */
+export const WORKER_RULES = [
+  "You are a coding worker driven by another agent. Do only the one job below, which is one small slice of a larger goal.",
+  "Run focused checks for the files you change; do not run the project's whole test suite or its full check pipeline, because the driver does that.",
+  "Do not try to get around a missing network, package download, toolchain, credential, Docker or server access with proxies, wrappers or downloads of your own.",
+  "If the job needs one of those, stop there, finish whatever does not need it, and put a line starting with `BLOCKED:` in your final report that says exactly what is missing.",
+  "Report what you changed, what you checked and the result, in a few lines.",
+].join("\n");
+
+export function withWorkerRules(brief: string): string {
+  return `${WORKER_RULES}\n\n---\n\n${brief}`;
+}
+
+/** The `BLOCKED:` lines of a worker's report. */
+export function blockedLines(message: string): string[] {
+  return message.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^BLOCKED:/.test(line));
+}
+
 function killTree(pid: number | undefined): void {
   if (!pid) return;
   try {
@@ -156,7 +177,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   let last: Attempt | undefined;
   for (let attempt = 1; attempt <= options.attempts; attempt += 1) {
     options.log?.(`worker attempt ${attempt} of ${options.attempts} (${options.model}, ${options.effort})`);
-    last = await runAttempt(options, brief);
+    last = await runAttempt(options, withWorkerRules(brief));
     if (last.completed && last.exitCode === 0 && !last.timedOut) {
       return { ok: true, attempts: attempt, message: last.message, changed: changedFiles(options.cwd) };
     }
@@ -174,6 +195,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
 }
 
 export function formatWorkerResult(result: WorkerResult): string {
+  const blocked = blockedLines(result.message);
   const head = result.ok
     ? `WORKER FINISHED (attempt ${result.attempts})`
     : `WORKER FAILED after ${result.attempts} attempt${result.attempts === 1 ? "" : "s"}: ${result.failure ?? "unknown"}`;
@@ -181,6 +203,9 @@ export function formatWorkerResult(result: WorkerResult): string {
     head,
     result.message ? `\nWorker's report:\n${result.message.trim()}` : "",
     result.changed.length > 0 ? `\nChanged files:\n${result.changed.join("\n")}` : "\nNo changed files were detected.",
+    blocked.length > 0
+      ? "\nThe worker hit a blocker it cannot clear. Clear it yourself (network, install, environment, credentials) or record it under \"manual steps\" in PROGRESS.md; do not send the same blocker to another worker."
+      : "",
     result.ok ? "\nCheck the work yourself: read the diff and run the acceptance command." : "\nStart a new worker with a shorter brief, or say so in your answer.",
   ].filter(Boolean).join("\n");
 }

@@ -69,6 +69,20 @@ path). It starts `codex exec` on the worker model in a new chat, so the worker's
 the acceptance command passes. If that chat breaks, up to three fresh chats are tried, each told what went wrong. Codex's
 built-in subagent tool is not used: it only starts agents when the user asks for them by name, so it cannot be relied on.
 
+Who does what (learned from real 10-hour runs that stalled on jobs the worker could not do):
+
+- **The worker** writes and fixes code in one small slice per job and runs only focused checks. Its sandbox has no
+  network and no credentials, so every brief starts with rules telling it not to build workarounds for those. It puts a
+  line starting with `BLOCKED:` in its report instead, and its Stop hook then lets it stop right away rather than
+  looping on an acceptance command it cannot pass.
+- **Luna** does the network, downloads and installs, toolchain and environment setup, credential and Docker checks, and
+  every full-suite or acceptance run. It checks the environment before the first job and records it in PROGRESS.md.
+- **Manual steps**: something nobody on the PC can fix (credentials, a server, a decision) goes under "manual steps" in
+  PROGRESS.md with what you must do; everything else is finished and Luna says so instead of retrying it.
+- **Acceptance** should be a command that can really pass on this PC (tests, lint, build). A project pipeline that also
+  needs the network, Docker or a deployment is split: the part that can pass is the acceptance command, the rest is
+  listed as manual steps.
+
 ```bash
 codex-chatgpt-web longrun worker xhigh     # worker effort: medium, high or xhigh (default xhigh)
 codex-chatgpt-web longrun driver off       # Luna works alone again; `driver on` switches it back

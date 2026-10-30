@@ -11,6 +11,9 @@ import { freshState, loadState, pruneStates, saveState, validSessionId, type Lon
 /** Marks the feedback this feature injects, so the prompt hook can tell it from a person's message. */
 export const LONGRUN_MARK = "[long-run]";
 
+/** A worker's report line that hands a blocker back to the driver; see WORKER_RULES in worker.ts. */
+export const WORKER_BLOCKED = /^\s*BLOCKED:/m;
+
 export interface StopHookInput {
   session_id?: unknown;
   cwd?: unknown;
@@ -47,6 +50,8 @@ export function driverContext(model: string, workerModel: string, workerEffort: 
     `(${workerModel} at ${workerEffort} effort), not by you. Only a short chat reply may stay with you.`,
     "Follow the section \"Luna drives, Sol works\" of your instructions (~/.codex/AGENTS.md): create .longrun/PROGRESS.md, write the job to .longrun/brief.md,",
     "run the worker command given there, then read the result and, for code, run the acceptance command yourself.",
+    "Keep each worker job to one small slice. You do the network, install, environment, credential and full-suite work yourself, and the worker only writes code and runs focused checks;",
+    "a blocker nobody on this PC can fix goes under \"manual steps\" in PROGRESS.md instead of being retried.",
     "This applies even when the task looks small or is only a question about the project.",
   ].join(" ");
 }
@@ -136,7 +141,7 @@ function blockReason(options: {
     result.tail || "(no output)",
     "```",
     options.driver
-      ? "You are the driver: give the fix to a worker subagent as your instructions say, then run this command yourself. Do not stop until it exits with code 0."
+      ? "You are the driver: give a code fix to a worker with the worker command from your instructions, one small slice at a time, then run this command yourself. A network, install, environment or credential problem is yours to fix, or to record under \"manual steps\" in PROGRESS.md if nobody on this PC can. Do not stop until it exits with code 0."
       : "Find the cause and fix it, then check again. Do not stop until this command exits with code 0.",
     "If you are sure the check itself is wrong or you cannot go on without the user, say exactly why in your answer instead of stopping silently.",
   ].join("\n");
@@ -209,6 +214,13 @@ export async function handleStop(input: StopHookInput, deps: HookDeps): Promise<
 
   if (endsWithQuestion(text(input.last_assistant_message))) {
     deps.log("waiting_for_user", { session: sessionId });
+    return undefined;
+  }
+
+  // A worker that names a blocker it cannot clear (network, credentials, Docker) is handed back to the driver
+  // right away instead of being sent round the acceptance loop it cannot pass.
+  if (!isDriver(input.model, settings) && WORKER_BLOCKED.test(text(input.last_assistant_message))) {
+    deps.log("worker_blocked", { session: sessionId });
     return undefined;
   }
 
