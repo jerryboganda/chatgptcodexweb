@@ -292,11 +292,16 @@ export async function longrunCommand(args: string[]): Promise<void> {
       const session = scanSessions(getCodexHome(), now, settings, { hours: 168, days: 14 }).find((item) => item.id === target);
       if (!session) throw new Error(`No Codex session ${target} was found in the last week.`);
       if (!session.cwd) throw new Error("That session has no folder to resume in.");
-      const launched = launchResume(session, message, { onExit: (code, reason) => { write(`The resumed turn ended (exit code ${code ?? "none"}${reason ? `: ${reason}` : ""}).`); } });
+      let finished: () => void = () => {};
+      const ended = new Promise<void>((done) => { finished = done; });
+      const launched = launchResume(session, message, {
+        onExit: (code, reason) => { write(`The resumed turn ended (exit code ${code ?? "none"}${reason ? `: ${reason}` : ""}).`); finished(); },
+      });
       appendLog(home, launched.started ? "resume_started" : "resume_failed", { session: session.id, cwd: session.cwd, manual: true });
       if (!launched.started) throw new Error(`Could not resume: ${launched.reason}`);
       write(`Resumed ${session.model} in ${session.cwd}. Waiting for its turn to finish (Ctrl+C leaves it running).`);
-      await new Promise<void>((done) => { process.once("SIGINT", () => done()); const wait = setInterval(() => {}, 1000); process.once("exit", () => clearInterval(wait)); });
+      process.once("SIGINT", () => finished());
+      await ended;
       return;
     }
     const sessions = scanSessions(getCodexHome(), now, settings, { hours: 8, days: 2 });

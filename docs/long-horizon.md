@@ -142,6 +142,10 @@ verdict for each driver and resumes the dead ones now; `longrun resume <session-
 `--message "<text>"` to say something else), which is also how to move a running chat to a new set of instructions.
 The resumed turn runs in the background and writes into the same chat; reopen the chat in Codex to see it.
 
+One limit: the Codex desktop app owns every chat that is open in it, and `codex exec resume` is refused for such a chat
+("already has an active writer", logged as `resume_blocked_by_app`). The watchdog then cannot help and `longrun health`
+still flags the driver; type "continue" into that chat yourself.
+
 ## Limits
 
 - It cannot make a model correct. Nothing is tested on this PC, so the only check is the GitHub Actions run after the

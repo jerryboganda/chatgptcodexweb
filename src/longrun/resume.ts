@@ -116,6 +116,11 @@ export function appServerStartedAt(): number | undefined {
 
 export interface ResumeLaunch { started: boolean; reason?: string }
 
+/** The Codex desktop app owns every chat that is open in it, and `codex exec resume` cannot write to one: that needs a person. */
+export function resumeExitEvent(code: number | null, reason: string): "resume_blocked_by_app" | "resume_exit" {
+  return code !== 0 && /already has an active writer/i.test(reason) ? "resume_blocked_by_app" : "resume_exit";
+}
+
 /** `codex exec resume <id>`: the turn runs on in the background and its events go into the same thread. */
 export function launchResume(
   session: { id: string; cwd: string; model: string }, message: string,
@@ -163,7 +168,7 @@ export function defaultWatchdogDeps(home = getConfigDir()): WatchdogDeps {
     appServerStartedAt,
     workerIn: (cwd) => liveWorker(cwd, home),
     resume: (session, message) => launchResume(session, message, {
-      onExit: (code, reason) => log("resume_exit", { session: session.id, code, reason: reason.slice(0, 200) }),
+      onExit: (code, reason) => log(resumeExitEvent(code, reason), { session: session.id, code, reason: reason.slice(0, 200) }),
     }),
     log,
   };

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionHealth } from "../src/longrun/health";
 import {
-  judgeDrivers, launchResume, loadResumeHistory, resumeMessage, saveResumeHistory, watchdogTick, type WatchdogDeps,
+  judgeDrivers, launchResume, loadResumeHistory, resumeExitEvent, resumeMessage, saveResumeHistory, watchdogTick, type WatchdogDeps,
 } from "../src/longrun/resume";
 import type { WorkerLock } from "../src/longrun/worker-lock";
 
@@ -134,4 +134,10 @@ test("launching a resume runs codex exec resume with the session, the model and 
   expect(readFileSync(join(dir, "seen.txt"), "utf8")).toBe(
     `exec resume abc-123 --skip-git-repo-check -m gpt-6-luna --dangerously-bypass-approvals-and-sandbox -|keep going`,
   );
+});
+
+test("a chat that is open in the Codex app is reported as blocked by the app, other exits as plain exits", () => {
+  expect(resumeExitEvent(1, "thread-store conflict: thread x already has an active writer Error")).toBe("resume_blocked_by_app");
+  expect(resumeExitEvent(1, "boom")).toBe("resume_exit");
+  expect(resumeExitEvent(0, "")).toBe("resume_exit");
 });
