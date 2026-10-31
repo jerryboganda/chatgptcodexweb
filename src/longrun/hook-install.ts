@@ -8,10 +8,12 @@ import { MANAGED_ROUTE_COMMENT } from "../codex-integration-shared";
 import { hookCommandLine } from "../hook-command";
 import { longrunDirectory } from "./settings";
 
+// The marker text is an identifier that installed config files already carry: changing it would leave the old block
+// behind next to a new one, so its wording stays as it was.
 export const LONGRUN_HOOKS_START =
   "# Managed by codex-chatgpt-web: long-run hooks keep a ChatGPT web task going until its acceptance check passes.";
 export const LONGRUN_HOOKS_END = "# End codex-chatgpt-web long-run hooks.";
-/** The Stop hook runs the project's acceptance command, which can take a while. */
+/** The Stop hook may wait for a running worker (up to 20 minutes) before it answers. */
 export const STOP_HOOK_TIMEOUT_SECONDS = 3600;
 export const PROMPT_HOOK_TIMEOUT_SECONDS = 15;
 

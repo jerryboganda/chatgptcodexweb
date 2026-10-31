@@ -64,11 +64,11 @@ test("long-run status reads the managed block and the last hook decision", () =>
   assert.equal(longrunStatus(HOOK_BLOCK.replace("hook stop", "other"), null, "6.1.14", now).facts.reason, "damaged");
   assert.equal(longrunStatus(HOOK_BLOCK, null, "6.2.0", now).facts.reason, "stale");
   assert.deepEqual(longrunStatus(HOOK_BLOCK, null, "6.1.14", now), { tone: "ok", facts: {} });
-  const recent = `{"at":"2026-10-29T09:59:30.000Z","event":"acceptance","session":"s"}\n`;
+  const recent = `{"at":"2026-10-29T09:59:30.000Z","event":"remind_ship","session":"s"}\n`;
   const busy = longrunStatus(HOOK_BLOCK, `partial line\n${recent}`, "6.1.14", now);
   assert.equal(busy.tone, "busy");
-  assert.equal(busy.facts.event, "acceptance");
-  const old = `{"at":"2026-10-29T09:00:00.000Z","event":"continue","session":"s"}\n`;
+  assert.equal(busy.facts.event, "remind_ship");
+  const old = `{"at":"2026-10-29T09:00:00.000Z","event":"remind_ship","session":"s"}\n`;
   assert.equal(longrunStatus(HOOK_BLOCK, old, "6.1.14", now).tone, "ok");
   const done = `{"at":"2026-10-29T09:59:50.000Z","event":"accepted","session":"s"}\n`;
   assert.equal(longrunStatus(HOOK_BLOCK, done, "6.1.14", now).tone, "ok");
@@ -80,7 +80,7 @@ test("collect combines every probe and survives failing probes", async () => {
     const codexConfigPath = path.join(dir, "config.toml");
     const hookLogPath = path.join(dir, "hook.log");
     fs.writeFileSync(codexConfigPath, `openai_base_url = "http://127.0.0.1:17841/v1"\n${HOOK_BLOCK}\n`);
-    fs.writeFileSync(hookLogPath, `{"at":"2026-10-29T10:00:00.000Z","event":"continue","session":"s"}\n`);
+    fs.writeFileSync(hookLogPath, `{"at":"2026-10-29T10:00:00.000Z","event":"remind_ship","session":"s"}\n`);
     const live = createLiveStatus({
       readConfig: () => CONFIG,
       fetchHealth: async () => ({ status: "ok", accepting_turns: true, active_http_turns: 1, active_browser_turns: 0 }),

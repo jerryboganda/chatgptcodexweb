@@ -3,22 +3,18 @@ import { join } from "node:path";
 import { atomicWriteFile, getConfigDir } from "../config";
 
 /**
- * Long-run keeps a Codex task going until its acceptance check passes. These are the user-level
- * limits; a project can tighten them in .codex/longrun.json. Everything is clamped so a typo in
- * the file can never turn the loop into an unbounded one.
+ * Long-run keeps a Luna-driven Codex task going until its work is committed and pushed. It never runs tests or builds:
+ * the only check is the GitHub Actions run after the push. These are the user-level limits; a project can tighten
+ * them in .codex/longrun.json. Everything is clamped so a typo in the file can never turn the loop into an unbounded one.
  */
 export interface LongrunSettings {
   enabled: boolean;
   /** Only models whose id starts with one of these prefixes are supervised. */
   modelPrefixes: string[];
-  /** Automatic continuations after a failed acceptance check, per user request. */
+  /** How often a driver that stops with unshipped work is sent back to commit and push it, per user request. */
   maxContinuations: number;
   /** Wall-clock budget per user request. */
   maxHours: number;
-  /** Stop after this many continuations that changed nothing and failed the same way. */
-  sameFailureLimit: number;
-  acceptanceTimeoutMinutes: number;
-  outputTailChars: number;
   /**
    * "Luna drives, Sol works": a native Luna model on the Codex quota runs the task and hands the coding to
    * a ChatGPT web worker. The Stop hook supervises these driver models as well.
@@ -39,19 +35,13 @@ export const DEFAULT_LONGRUN_SETTINGS: LongrunSettings = Object.freeze({
   driverModelPrefixes: ["gpt-6-luna", "gpt-5.6-luna"],
   workerModel: "chatgpt-web/gpt-6-sol",
   workerEffort: "xhigh" as WorkerEffort,
-  maxContinuations: 40,
+  maxContinuations: 3,
   maxHours: 20,
-  sameFailureLimit: 5,
-  acceptanceTimeoutMinutes: 30,
-  outputTailChars: 6000,
 });
 
 export const LONGRUN_LIMITS = {
-  maxContinuations: [1, 500],
+  maxContinuations: [1, 20],
   maxHours: [0.25, 168],
-  sameFailureLimit: [2, 50],
-  acceptanceTimeoutMinutes: [1, 240],
-  outputTailChars: [500, 20_000],
 } as const;
 
 export function clampNumber(value: unknown, [min, max]: readonly [number, number], fallback: number): number {
@@ -93,9 +83,6 @@ export function normalizeSettings(raw: unknown): LongrunSettings {
     workerEffort,
     maxContinuations: Math.round(clampNumber(source.maxContinuations, LONGRUN_LIMITS.maxContinuations, defaults.maxContinuations)),
     maxHours: clampNumber(source.maxHours, LONGRUN_LIMITS.maxHours, defaults.maxHours),
-    sameFailureLimit: Math.round(clampNumber(source.sameFailureLimit, LONGRUN_LIMITS.sameFailureLimit, defaults.sameFailureLimit)),
-    acceptanceTimeoutMinutes: clampNumber(source.acceptanceTimeoutMinutes, LONGRUN_LIMITS.acceptanceTimeoutMinutes, defaults.acceptanceTimeoutMinutes),
-    outputTailChars: Math.round(clampNumber(source.outputTailChars, LONGRUN_LIMITS.outputTailChars, defaults.outputTailChars)),
   };
 }
 

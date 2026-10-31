@@ -5,7 +5,7 @@ const path = require("node:path");
 
 const LONGRUN_START = "codex-chatgpt-web: long-run hooks";
 const LONGRUN_END = "# End codex-chatgpt-web long-run hooks.";
-const ACTIVE_LONGRUN_EVENTS = new Set(["task_started", "acceptance", "continue"]);
+const ACTIVE_LONGRUN_EVENTS = new Set(["task_started", "remind_ship", "worker_busy", "worker_session"]);
 const LONGRUN_ACTIVE_WINDOW_MS = 120_000;
 const PROBE_TIMEOUT_MS = 2_500;
 

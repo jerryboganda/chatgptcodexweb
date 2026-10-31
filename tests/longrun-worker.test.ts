@@ -16,7 +16,7 @@ function temp(): string {
 }
 
 const event = (value: unknown) => JSON.stringify(value);
-const BASE = { model: "chatgpt-web/gpt-6-sol", effort: "high" };
+const BASE = { model: "chatgpt-web/gpt-6-sol", effort: "high", sleep: async () => {} };
 
 test("worker events: the last agent message wins, reconnect notices are ignored, a failed turn is an error", () => {
   expect(parseWorkerEvents([
@@ -104,7 +104,9 @@ test("every worker brief starts with the rules that keep a worker to one slice a
   expect(brief.startsWith(WORKER_RULES)).toBe(true);
   expect(brief.endsWith("Fix the parser")).toBe(true);
   expect(WORKER_RULES).toContain("one small slice");
-  expect(WORKER_RULES).toContain("whole test suite");
+  expect(WORKER_RULES).toContain("Do NOT run tests, builds, linters");
+  expect(WORKER_RULES).toContain("GitHub Actions");
+  expect(WORKER_RULES).toContain("Do not commit or push");
   expect(WORKER_RULES).toContain("`BLOCKED:`");
 });
 

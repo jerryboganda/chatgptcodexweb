@@ -113,14 +113,7 @@ export function syncDriverInstructions(
 function describeProject(directory: string): string[] {
   const plan = resolveProject(directory);
   if (!plan.enabled) return [`This folder: long-run is switched off (${plan.root}).`];
-  if (!plan.acceptance) {
-    return [
-      `This folder: no acceptance command found (${plan.root}).`,
-      '  Add a line like "acceptance: npm test" to AGENTS.md and long-run will keep going until it passes.',
-    ];
-  }
-  const where = plan.acceptance.file ? ` (${plan.acceptance.file})` : ` (detected: ${plan.acceptance.source})`;
-  return [`This folder: acceptance command is \`${plan.acceptance.command}\`${where}.`];
+  return [`This folder: long-run is on (${plan.root}). Nothing here is tested or built; the work is committed, pushed to main and checked by GitHub Actions.`];
 }
 
 const WORKER_USAGE = `Usage: codex-chatgpt-web worker run [--brief-file <file>] [--effort <medium|high|xhigh>] [--model <chatgpt-web/...>]
@@ -217,7 +210,7 @@ export async function workerCommand(args: string[]): Promise<void> {
   try {
     const result = await runWorker({
       cwd, brief, model, effort, timeoutMs, attempts,
-      heartbeatMs: 60_000,
+      heartbeatMs: 300_000,
       log: (line) => stdout.write(`${line}\n`),
     });
     appendLog(home, "worker_finished", { ok: result.ok, attempts: result.attempts, minutes: Math.round((Date.now() - startedAt) / 60_000) });
@@ -233,9 +226,9 @@ export async function workerCommand(args: string[]): Promise<void> {
 
 const USAGE = `Usage: codex-chatgpt-web longrun [status [folder] | health [--hours <n>] | on | off | install | uninstall | worker <effort> | driver on|off]
 
-  status [folder]   show whether long-run is on, whether Codex has the hooks, and which command checks a folder
+  status [folder]   show whether long-run is on, whether Codex has the hooks, and how a folder is handled
   health [--hours]  are the long runs of the last day alive? per project: driver, worker, and what looks wrong
-  on / off          turn the automatic "keep going until the check passes" behaviour on or off
+  on / off          turn the automatic "finish, commit and push" reminders on or off
   install           (re)install the Codex hooks now; they are also kept in place whenever the bridge starts
   uninstall         remove the Codex hooks and switch long-run off
   worker <effort>   the ChatGPT web worker's effort when a Luna model drives a task: ${WORKER_EFFORTS.join(", ")}
@@ -269,7 +262,7 @@ export async function longrunCommand(args: string[]): Promise<void> {
     write(`Luna drives, Sol works: ${settings.driver ? "ON" : "OFF"}. Worker: ${settings.workerModel} at ${settings.workerEffort} effort. Instructions in ~/.codex/AGENTS.md: ${driverBlock}.`);
     for (const line of describeProject(folder)) write(line);
     write("Worker access: full, with no sandbox and no approval prompts, so the worker is never refused a file, tool or network access.");
-    write(`Limits per request: ${settings.maxContinuations} automatic continuations, ${settings.maxHours} h, check timeout ${settings.acceptanceTimeoutMinutes} min.`);
+    write(`Limits per request: ${settings.maxContinuations} "commit and push" reminders, ${settings.maxHours} h. No tests, builds or acceptance checks run anywhere.`);
     write(`Settings file: ${longrunSettingsPath(home)}`);
     return;
   }

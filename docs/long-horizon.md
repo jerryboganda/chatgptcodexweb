@@ -1,41 +1,44 @@
 # Long-horizon runs
 
+## The flow: explore, plan, code, commit, push, deploy
+
+Nothing is tested or built on this PC or on the production server. No test suite, no acceptance command, no `npm`,
+`bun`, `pnpm`, `yarn`, `pip`, `cargo` or `go` run, no type check, no lint, by Luna or by the worker. Every task goes
+through the same flow:
+
+1. **Explore** the code that matters.
+2. **Plan** the change as slices of about half an hour each, in `.longrun/PROGRESS.md`.
+3. **Code** one slice at a time with the ChatGPT web worker.
+4. **Commit everything and push to `main`.**
+5. **One light check, by GitHub Actions**: Luna looks at the run once (`gh run list`, `gh run watch`) and reports it. The
+   project's workflow deploys to production on push.
+
+If the GitHub Actions run fails, Luna reports the failing job and its link and stops. You read the run online and tell
+it what you see; it then looks at that. Nothing loops on a failing check.
+
 ## Automatic mode: just use Codex
 
-Pick a ChatGPT web model in Codex (the desktop app or the CLI) and work as usual. The bridge keeps Codex's
-config current with two small hooks, so a task keeps going until its check passes:
+The bridge keeps Codex's config current with two small hooks. They only do two things:
 
-1. You send a request. The app remembers what the project looked like.
-2. The model works and stops. If it changed files, the project's **acceptance command** runs.
-3. If the command fails, Codex is sent back to work in the same chat with the output, instead of stopping.
-   This repeats until the command passes or a limit is hit.
-4. If the command passes, the turn ends normally.
+- A `UserPromptSubmit` hook marks the start of a request and restates the flow to a Luna driver.
+- A `Stop` hook looks at a **Luna driver** that ends its turn with uncommitted or unpushed work and sends it back to
+  commit, push and report the GitHub Actions run. At most 3 reminders per request. It only reads `git status`; it never
+  runs a project command. It also waits while a worker is still running in the folder.
 
-A turn that did not change any file (a question, an explanation) is never touched, and neither is a turn whose
-last words are a question to you. Models other than `chatgpt-web/*`, subagents and projects that switched it off
-are left alone. Nothing needs to be started and nothing is shown to configure.
+A turn that did not change any file (a question, an explanation) is never touched, and neither is a turn whose last
+words are a question to you. Models other than the Luna driver, subagents and projects that switched it off are left
+alone. Old `acceptance:` lines in `AGENTS.md`, `.codex/longrun.json` and `.longrun/acceptance` scripts are ignored.
 
-**Where the acceptance command comes from** (first match wins, nearest folder first):
-
-| Source | Example |
-| --- | --- |
-| `.codex/longrun.json` | `{ "acceptance": "npm test", "maxContinuations": 20 }` |
-| a line in `AGENTS.md` | `acceptance: npm test` |
-| the project's test runner | `npm test` (a real test script), `python -m pytest -q`, `cargo test`, `go test ./...`, `dotnet test`, `make test` |
-
-Without any of these the hooks stay quiet, and Codex shows a one-time note on how to add the line.
-
-**Limits** (per request; a new message from you starts a new budget): 40 automatic continuations, 20 hours, the
-acceptance command is stopped after 30 minutes, and the loop ends early when the same failure comes back 5 times with
-no change to the project. Change them in `~/.codex-chatgpt-web/longrun.json` (`maxContinuations`, `maxHours`,
-`sameFailureLimit`, `acceptanceTimeoutMinutes`) or per project.
+**Limits** (per request; a new message from you starts a new budget): 3 "commit and push" reminders and 20 hours.
+Change them in `~/.codex-chatgpt-web/longrun.json` (`maxContinuations`, `maxHours`) or per project in
+`.codex/longrun.json`.
 
 **Control it from a terminal** (`codex-chatgpt-web` is the installed runtime command):
 
 ```bash
-codex-chatgpt-web longrun status     # on/off, whether Codex has the hooks, which command checks this folder
-codex-chatgpt-web longrun off        # stop continuing on its own (removes the hooks)
-codex-chatgpt-web longrun on         # turn it back on
+codex-chatgpt-web longrun status     # on/off, whether Codex has the hooks, how this folder is handled
+codex-chatgpt-web longrun off        # stop the reminders (removes the hooks)
+codex-chatgpt-web longrun on         # turn them back on
 ```
 
 Other switches: set `CODEX_LONGRUN=off` in the environment, create an empty `.longrun/off` file in a project, or put
@@ -56,36 +59,52 @@ chat after the first install so Codex loads the hooks.
 ## Luna drives, Sol works
 
 Pick a **Luna** model (`gpt-6-luna`, High) in Codex and type the task as usual. Luna runs on your **Codex quota** and is
-the driver: it keeps `.longrun/PROGRESS.md`, hands the coding and review to **one ChatGPT web worker at a time**
-(`chatgpt-web/gpt-6-sol` at the effort you chose), checks every result itself, and starts a fresh worker with a short
-brief when one fails. A new worker means a new ChatGPT chat, so one long or broken web chat cannot spoil the task, and
-Luna's own thread uses Codex's native compaction. The Stop hook above supervises Luna sessions too, so the task ends
-when the acceptance command passes, not when Luna says so.
+the driver: it keeps `.longrun/PROGRESS.md`, hands the exploration, planning and coding to **one ChatGPT web worker at a
+time** (`chatgpt-web/gpt-6-sol` at the effort you chose), reads every result, and at the end commits, pushes to `main` and
+reports the GitHub Actions run. A new worker means a new ChatGPT chat, so one long or broken web chat cannot spoil the
+task, and Luna's own thread uses Codex's native compaction.
 
 The bridge installs the instructions as a marked block in `~/.codex/AGENTS.md` (only when the route is installed). The
 block asks something only of a main-agent Luna; any other model or subagent is told to ignore it. Luna hands a job over
 by running `codex-chatgpt-web worker run --brief-file .longrun/brief.md`, a plain command (the block holds its exact
-path). It starts `codex exec` on the worker model in a new chat. The worker is not held to the acceptance command (its
-Stop hook leaves it alone): Luna checks its work, so a worker never reruns the whole suite or loops on a check it cannot
-pass. If that chat breaks or runs out of its hour, up to three fresh chats are tried, each told what went wrong and what
-the last one reported. Only one worker runs per folder: a second `worker run` prints `WORKER BUSY` (stopping a Luna turn
-does not stop the worker it started), `worker status` and `worker stop` show or end it, and every report is also saved in
-`.longrun/worker-report.md`. While a worker runs, Luna's Stop hook waits for it before running the acceptance command, so
-the check never builds beside the worker. Codex's
-built-in subagent tool is not used: it only starts agents when the user asks for them by name, so it cannot be relied on.
+path). It starts `codex exec` on the worker model in a new chat with full access (`danger-full-access`, approvals off).
+Only one worker runs per folder: a second `worker run` prints `WORKER BUSY` (stopping a Luna turn does not stop the
+worker it started), `worker status` and `worker stop` show or end it, and every report is also saved in
+`.longrun/worker-report.md`. Codex's built-in subagent tool is not used: it only starts agents when the user asks for
+them by name, so it cannot be relied on.
 
-Who does what (learned from real 10-hour runs that stalled on jobs the worker could not do):
+**A failed attempt never loses the work.** The worker's steps (what it said, changed and ran) are written to
+`.longrun/worker-progress.md` as they happen, and after every attempt the work tree is saved as a git checkpoint under
+`refs/longrun/` (without touching your branch, index or files; the last 20 are kept; `git diff refs/longrun/<name>`).
+The files stay in the folder, and the next attempt is a fresh chat whose brief says what failed, which files already
+changed and what the last attempt did, so it continues instead of starting over. `.longrun/` is kept out of commits
+through the repository's own `.git/info/exclude`.
 
-- **The worker** writes and fixes code in one small slice per job and runs only focused checks. It has full access, the
-  network included, and installs what its slice needs. Every brief starts with rules telling it not to build workarounds
-  for what nobody on this PC can provide (a credential, an account, a server); it puts a line starting with `BLOCKED:` in
-  its report instead, which Luna then clears itself or records as a manual step.
-- **Luna** does the environment checks (network, toolchains, Docker, credentials) and every full-suite or acceptance run. It checks the environment before the first job and records it in PROGRESS.md.
-- **Manual steps**: something nobody on the PC can fix (credentials, a server, a decision) goes under "manual steps" in
-  PROGRESS.md with what you must do; everything else is finished and Luna says so instead of retrying it.
-- **Acceptance** should be a command that can really pass on this PC (tests, lint, build). A project pipeline that also
-  needs the network, Docker or a deployment is split: the part that can pass is the acceptance command, the rest is
-  listed as manual steps.
+**Failures are told apart by cause**, so the wait matches it:
+
+| Cause | What happens |
+| --- | --- |
+| ChatGPT asks for a tool permission | wait 20 s and retry; does not use up an attempt |
+| ChatGPT is at capacity or rate limited | wait 5 min and retry; does not use up an attempt |
+| the bridge or browser is not answering | wait 1 min and retry; does not use up an attempt (see `longrun health`) |
+| the worker goes silent for 20 minutes | cut off and retried from its saved progress |
+| the worker ran out of its hour | retried; Luna is told the slice was too big |
+| the worker starts a test, build or package script | stopped at once and retried with a stricter brief |
+
+Up to 3 real attempts per job, plus up to 6 free retries for the first three causes.
+
+Who does what:
+
+- **The worker** explores, plans and writes code in one small slice per job. It has full access, the network included. It
+  never runs tests, builds, linters, type checkers or package scripts (a run that starts one is stopped), and it does not
+  commit or push. Every brief starts with rules telling it not to build workarounds for what nobody on this PC can
+  provide (a credential, an account, a server); it puts a line starting with `BLOCKED:` in its report instead, which
+  Luna then clears itself or records as a manual step.
+- **Luna** reads the diffs, keeps PROGRESS.md, waits for the worker with long polls and does nothing in between (no file
+  checks, no frequent polling), then commits, pushes and reports the GitHub Actions run.
+- **Manual steps**: something nobody on the PC can fix (credentials, no git remote or GitHub login, a decision) goes
+  under "manual steps" in PROGRESS.md with what you must do; everything else is finished and Luna says so instead of
+  retrying it.
 
 ```bash
 codex-chatgpt-web longrun worker xhigh     # worker effort: medium, high or xhigh (default xhigh)
@@ -95,7 +114,7 @@ codex-chatgpt-web longrun health           # are the runs of the last day alive?
 ```
 
 Open a new Codex chat after changing either setting. Whether Luna hands the work over is its own decision, guided by
-the block; the acceptance command is what enforces completion. The worker runs with full access (`danger-full-access`, approvals off), like the Luna driver.
+the block.
 
 `longrun health` reads Codex's own session files and says, per project, whether the Luna driver and the worker are working,
 finished or interrupted, and flags a driver that went silent in the middle of a turn (Codex restarted or lost its
@@ -103,9 +122,10 @@ connection: open that chat and send "continue") and a worker that outlived its d
 
 The worker has no sandbox: on Windows the `workspace-write` sandbox blocked tools that write caches or rename folders elsewhere
 (hundreds of `EPERM`, `EACCES` and "Access is denied" errors in worker sessions against a handful in Luna's), so every
-worker run now uses full access and no approval prompts.
+worker run uses full access and no approval prompts.
 
-The rest of this page describes the **unattended supervisor**, a separate script for jobs you start yourself.
+The rest of this page describes the **unattended supervisor**, a separate script for jobs you start yourself. It is not
+part of the flow above and still uses its own acceptance command (`--verify`).
 
 `scripts/longrun/longrun.mjs` drives a Codex task for hours without you. The coding itself runs through
 the bridge on your **ChatGPT web quota** (a `chatgpt-web/*` model). A small **controller** model supervises it.

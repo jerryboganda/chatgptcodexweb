@@ -27,22 +27,43 @@ test("the instructions name the worker model and effort and only ask something o
   expect(driverInstructions({ ...SETTINGS, workerEffort: "xhigh" })).toContain("at `xhigh` effort");
 });
 
-test("the instructions split the work: slices for the worker, network, environment and full suites for Luna, manual steps for the user", () => {
+test("the instructions give one flow: explore, plan, code, commit, push to main, one GitHub Actions look, and no tests anywhere", () => {
   const text = driverInstructions(SETTINGS);
+  expect(text).toContain("THE FLOW is explore the code, plan, code, one light check by GitHub Actions, commit, push to main, deploy");
+  expect(text).toContain("NOTHING is tested or built locally or on the production server");
+  expect(text).toContain("by you or by the worker");
   expect(text).toContain("one slice");
   expect(text).toContain("never send a whole feature as a single job");
-  expect(text).toContain("Check the environment yourself before the first worker job");
-  expect(text).toContain("You do these yourself, never the worker: the environment checks (network, toolchains, Docker, credentials, deployment)");
-  expect(text).toContain("every full-suite or acceptance run");
+  expect(text).toContain("`git push origin main`");
+  expect(text).toContain("`gh run list --branch main --limit 3`");
+  expect(text).toContain("the user looks at it online and reports back");
   expect(text).toContain("`BLOCKED:`");
   expect(text).toContain("never send the same blocker to another worker");
   expect(text).toContain('"manual steps"');
-  expect(text).toContain("Choose an acceptance command that can really pass on this PC");
+});
+
+test("the instructions leave no acceptance command, test run or environment check for anyone to do", () => {
+  const text = driverInstructions(SETTINGS);
+  expect(text).not.toContain("Choose an acceptance command");
+  expect(text).not.toContain("Check the environment yourself");
+  expect(text).not.toContain("full-suite");
+  expect(text).not.toContain("run the acceptance command");
+  expect(text).toContain("Ignore any `acceptance:` line");
+});
+
+test("the instructions make failures cheap: saved progress, continue from it, never restart from scratch", () => {
+  const text = driverInstructions(SETTINGS);
+  expect(text).toContain("`.longrun/worker-progress.md`");
+  expect(text).toContain("its files as a git checkpoint");
+  expect(text).toContain("Never restart from scratch");
+  expect(text).toContain("`codex-chatgpt-web longrun health`");
+  expect(text).toContain("this file and the files themselves are what survive a failure");
 });
 
 test("the instructions tell Luna to wait with long polls and never start a second worker in a folder", () => {
   const text = driverInstructions(SETTINGS);
   expect(text).toContain("long polls (`yield_time_ms` 300000)");
+  expect(text).toContain("an empty poll is normal");
   expect(text).toContain("`WORKER BUSY`");
   expect(text).toContain("never start a second one");
   expect(text).toContain("`stop` instead of `run`");
@@ -107,10 +128,4 @@ test("the instructions carry the exact worker command and do not point at the su
   const block = upsertDriverBlock("", SETTINGS, "node cli.js worker run");
   expect(upsertDriverBlock(block.text, SETTINGS, "node cli.js worker run").changed).toBe(false);
   expect(upsertDriverBlock(block.text, SETTINGS, "node other.js worker run").changed).toBe(true);
-});
-
-test("the instructions warn that the Stop hook runs the check in a plain shell, so its setup belongs in a script", () => {
-  const text = driverInstructions(SETTINGS);
-  expect(text).toContain("runs the acceptance command in a plain shell");
-  expect(text).toContain("`.longrun/acceptance.cmd`");
 });

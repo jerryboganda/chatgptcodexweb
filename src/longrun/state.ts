@@ -9,18 +9,13 @@ export interface LongrunSessionState {
   sessionId: string;
   /** When the current user request started. */
   taskStartedAt: number;
-  /** Work-tree fingerprint when the request started (or after the last acceptance run). */
+  /** Work-tree fingerprint when the request started (or after the last reminder). */
   baseline: string;
-  /** Automatic continuations spent on this request. */
+  /** "Commit and push" reminders spent on this request. */
   continuations: number;
-  lastFailureSignature?: string;
-  /** Consecutive failures with the same signature and no edits in between. */
-  sameFailure: number;
-  /** The loop ended for this request (budget used up or stuck); stay quiet until the next request. */
+  /** The reminders ended for this request (budget used up); stay quiet until the next request. */
   gaveUp: boolean;
-  /** The "no acceptance command" hint was already shown for this session. */
-  hintShown: boolean;
-  /** A `worker run` job: the driver checks its work, so the Stop hook leaves it alone. */
+  /** A `worker run` job: the driver ships its work, so the Stop hook leaves it alone. */
   worker?: boolean;
   updatedAt: number;
 }
@@ -42,7 +37,7 @@ function statePath(sessionId: string, home: string): string {
 
 export function freshState(sessionId: string, baseline: string, now: number): LongrunSessionState {
   return {
-    version: 1, sessionId, taskStartedAt: now, baseline, continuations: 0, sameFailure: 0, gaveUp: false, hintShown: false, updatedAt: now,
+    version: 1, sessionId, taskStartedAt: now, baseline, continuations: 0, gaveUp: false, updatedAt: now,
   };
 }
 
@@ -55,9 +50,7 @@ export function loadState(sessionId: string, home = getConfigDir()): LongrunSess
       ...freshState(sessionId, value.baseline, Number(value.taskStartedAt) || Date.now()),
       ...value,
       continuations: Math.max(0, Math.round(Number(value.continuations) || 0)),
-      sameFailure: Math.max(0, Math.round(Number(value.sameFailure) || 0)),
       gaveUp: value.gaveUp === true,
-      hintShown: value.hintShown === true,
       worker: value.worker === true,
     };
   } catch {
