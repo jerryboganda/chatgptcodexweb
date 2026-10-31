@@ -26,6 +26,8 @@ const HEAD_BYTES = 1_000_000;
 const TAIL_BYTES = 512 * 1024;
 /** A driver polls its worker about every half minute, so ten silent minutes mean it is gone; a worker may think for long. */
 const STALL_MINUTES: Record<SessionRole, number> = { driver: 10, worker: 30, direct: 30 };
+/** A worker process this old with no chat of its own is stuck before ChatGPT. */
+const NO_CHAT_MINUTES = 10;
 const BOUNDARIES = new Set(["task_started", "task_complete", "turn_aborted"]);
 
 export function summarizeRollout(head: string, tail: string[], now: number, settings: RoleSettings): SessionHealth | undefined {
@@ -141,8 +143,15 @@ export function formatHealth(sessions: SessionHealth[], now: number, workerIn: (
         problems.push(`${cwd}: the driver has been silent for ${ago(now - latest.lastActivityAt).replace(" ago", "")} in the middle of a turn. Codex was probably restarted or lost its connection. Open that chat and send a message such as "continue".`);
       }
       // Only a worker whose process still holds the folder can be stuck; a silent chat with no process just ended.
-      if (latest.phase === "stalled" && role === "worker" && worker) {
-        problems.push(`${cwd}: the worker's process is still running but its chat has been silent for ${ago(now - latest.lastActivityAt).replace(" ago", "")}. ChatGPT may have stopped responding; if it stays silent, end it with the worker command's \`stop\` action and send the job again.`);
+      // A chat older than the process belongs to an earlier worker, so it says nothing about this one.
+      if (role === "worker" && worker) {
+        if (latest.lastActivityAt >= worker.startedAt) {
+          if (latest.phase === "stalled") {
+            problems.push(`${cwd}: the worker's process is still running but its chat has been silent for ${ago(now - latest.lastActivityAt).replace(" ago", "")}. ChatGPT may have stopped responding; if it stays silent, end it with the worker command's \`stop\` action and send the job again.`);
+          }
+        } else if (now - worker.startedAt > NO_CHAT_MINUTES * 60_000) {
+          problems.push(`${cwd}: the worker's process has been running for ${ago(now - worker.startedAt).replace(" ago", "")} and no worker chat has started since. It may be stuck before ChatGPT; end it with the worker command's \`stop\` action and send the job again.`);
+        }
       }
       const activeChat = group.find((session) => session.role === "worker" && session.phase === "working");
       if (role === "driver" && latest.phase !== "working" && (worker || activeChat)) {

@@ -157,3 +157,13 @@ test("a driver that stopped while a worker chat is still active is reported even
   expect(text).toContain("a worker may still be running (its chat was active 14 min ago) but its driver is interrupted");
   expect(formatHealth([driver, { ...worker, phase: "idle" }], NOW, () => undefined).join("\n")).toContain("No problems found.");
 });
+
+test("a worker process younger than its predecessor's chat is not reported, an old one with no chat of its own is", () => {
+  const oldChat = { id: "w", cwd: "C:\Projects\App", model: "chatgpt-web/gpt-6-sol", role: "worker" as const, lastActivityAt: NOW - 200 * 60_000, phase: "stalled" as const };
+  const fresh: WorkerLock = { pid: 9, cwd: "C:\Projects\App", startedAt: NOW - 30_000, heartbeatAt: NOW, model: "", effort: "" };
+  expect(formatHealth([oldChat], NOW, () => fresh).join("\n")).toContain("No problems found.");
+  const stuck = { ...fresh, startedAt: NOW - 25 * 60_000 };
+  expect(formatHealth([oldChat], NOW, () => stuck).join("\n")).toContain("no worker chat has started since");
+  const own = { ...oldChat, lastActivityAt: NOW - 40 * 60_000 };
+  expect(formatHealth([own], NOW, () => ({ ...fresh, startedAt: NOW - 100 * 60_000 })).join("\n")).toContain("its chat has been silent for");
+});
