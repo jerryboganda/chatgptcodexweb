@@ -185,7 +185,7 @@ bun run app:package
 
 ## 长时间任务
 
-对于需要运行数小时的任务，`scripts/longrun/longrun.mjs` 会监督 Codex：维护进度文件，失败后恢复同一聊天或带着简报交给新聊天，只有你的验收命令通过才算完成。编码使用 ChatGPT 网页额度；小型控制器模型（默认 `gpt-6-luna`，high，可更改）只提供建议。详见 [docs/long-horizon.md](docs/long-horizon.md)。
+对于需要运行数小时的任务，请在 Codex 中选择 Luna 模型：Luna 负责推进，把编码一片一片交给 ChatGPT 网页工作器，并在每次尝试后保存进度。不会在你的电脑或服务器上运行任何测试；改动会被提交并推送到 `main`，再由 GitHub Actions 检查一次。编码使用 ChatGPT 网页额度，Luna 使用 Codex 额度。详见 [docs/long-horizon.md](docs/long-horizon.md)。
 
 ## Star History
 

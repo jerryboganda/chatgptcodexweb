@@ -15,6 +15,9 @@ import { resolveProject } from "./project";
 import { DEFAULT_WORKER_TIMEOUT_MINUTES, formatWorkerResult, runWorker } from "./worker";
 import { acquireWorkerLock, describeWorker, liveWorker, stopWorker } from "./worker-lock";
 import { formatHealth, scanSessions } from "./health";
+import {
+  appServerStartedAt, defaultWatchdogDeps, judgeDrivers, launchResume, loadResumeHistory, resumeMessage, watchdogTick,
+} from "./resume";
 import { loadLongrunSettings, longrunSettingsPath, saveLongrunSettings, WORKER_EFFORTS } from "./settings";
 
 const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
@@ -224,10 +227,12 @@ export async function workerCommand(args: string[]): Promise<void> {
   }
 }
 
-const USAGE = `Usage: codex-chatgpt-web longrun [status [folder] | health [--hours <n>] | on | off | install | uninstall | worker <effort> | driver on|off]
+const USAGE = `Usage: codex-chatgpt-web longrun [status [folder] | health [--hours <n>] | resume [<session-id>] | on | off | install | uninstall | worker <effort> | driver on|off]
 
   status [folder]   show whether long-run is on, whether Codex has the hooks, and how a folder is handled
   health [--hours]  are the long runs of the last day alive? per project: driver, worker, and what looks wrong
+  resume [id]       resume Luna drivers whose turn died (Codex restarted); the bridge does this on its own every 2 minutes.
+                    With a session id, send that driver a "continue" now; add --message "<text>" to say something else
   on / off          turn the automatic "finish, commit and push" reminders on or off
   install           (re)install the Codex hooks now; they are also kept in place whenever the bridge starts
   uninstall         remove the Codex hooks and switch long-run off
@@ -277,6 +282,34 @@ export async function longrunCommand(args: string[]): Promise<void> {
     return;
   }
 
+
+  if (action === "resume") {
+    const target = args[0] && !args[0].startsWith("--") ? args.shift() : undefined;
+    const message = optionValue(args, "--message") ?? resumeMessage();
+    const settings = loadLongrunSettings(home);
+    const now = Date.now();
+    if (target) {
+      const session = scanSessions(getCodexHome(), now, settings, { hours: 168, days: 14 }).find((item) => item.id === target);
+      if (!session) throw new Error(`No Codex session ${target} was found in the last week.`);
+      if (!session.cwd) throw new Error("That session has no folder to resume in.");
+      const launched = launchResume(session, message, { onExit: (code, reason) => { write(`The resumed turn ended (exit code ${code ?? "none"}${reason ? `: ${reason}` : ""}).`); } });
+      appendLog(home, launched.started ? "resume_started" : "resume_failed", { session: session.id, cwd: session.cwd, manual: true });
+      if (!launched.started) throw new Error(`Could not resume: ${launched.reason}`);
+      write(`Resumed ${session.model} in ${session.cwd}. Waiting for its turn to finish (Ctrl+C leaves it running).`);
+      await new Promise<void>((done) => { process.once("SIGINT", () => done()); const wait = setInterval(() => {}, 1000); process.once("exit", () => clearInterval(wait)); });
+      return;
+    }
+    const sessions = scanSessions(getCodexHome(), now, settings, { hours: 8, days: 2 });
+    const verdicts = judgeDrivers({ now, sessions, appServerStartedAt: appServerStartedAt(), workerIn: (cwd) => liveWorker(cwd, home), history: loadResumeHistory(home) });
+    if (verdicts.length === 0) write("No Luna drivers were active in the last 8 hours.");
+    for (const verdict of verdicts) write(`${verdict.session.cwd}: ${verdict.resume ? "dead, resuming" : verdict.why}`);
+    if (verdicts.some((verdict) => verdict.resume)) {
+      const resumed = watchdogTick(defaultWatchdogDeps(home));
+      write(`Resumed ${resumed.length} driver${resumed.length === 1 ? "" : "s"}; they continue in the background.`);
+      if (resumed.length > 0) await new Promise((done) => setTimeout(done, 15_000));
+    }
+    return;
+  }
 
   if (action === "on" || action === "off" || action === "install") {
     if (action !== "install") saveLongrunSettings({ enabled: action === "on" }, home);

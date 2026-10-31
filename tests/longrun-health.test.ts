@@ -131,6 +131,7 @@ test("the report says when a driver went silent or a worker outlived its driver,
   const running: WorkerLock = { pid: 31128, cwd: "C:\\Projects\\App", startedAt: NOW - 41 * 60_000, heartbeatAt: NOW, model: "chatgpt-web/gpt-6-sol", effort: "xhigh" };
   const silent = formatHealth([driver("stalled")], NOW, () => undefined).join("\n");
   expect(silent).toContain("SILENT in the middle of a turn");
+  expect(silent).toContain('resumes it by itself');
   expect(silent).toContain('send a message such as "continue"');
   const orphan = formatHealth([driver("interrupted")], NOW, () => running).join("\n");
   expect(orphan).toContain("a worker is still running (started 41 min ago, pid 31128");

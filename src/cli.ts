@@ -31,6 +31,7 @@ import { getTunnelServiceStatus, restartTunnelService, startTunnelService, stopT
 import { VERSION } from "./version";
 import { runDevCommand } from "./dev-chat/cli";
 import { longrunCommand, runLongrunHook, syncLongrunHooks, workerCommand } from "./longrun/cli";
+import { startDriverWatchdog } from "./longrun/resume";
 
 const HELP = `codex-chatgpt-web ${VERSION}
 
@@ -628,6 +629,8 @@ async function main(): Promise<void> {
     const server = startServer(config);
     // Keep the long-run hooks in Codex current (a new runtime version has a new command path).
     syncLongrunHooks(config);
+    // A Luna driver whose turn died with a Codex restart is resumed here, so a long run does not wait for a person.
+    startDriverWatchdog();
     stdout.write(`codex-chatgpt-web ${VERSION} listening on http://${config.host}:${server.port}/v1 (${config.mode})\n`);
     await new Promise<void>(() => {});
   } else if (command === "dev") await runDevCommand(args);

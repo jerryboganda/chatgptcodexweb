@@ -140,7 +140,7 @@ export function formatHealth(sessions: SessionHealth[], now: number, workerIn: (
       if (!latest) continue;
       lines.push(`  ${role.padEnd(7)} ${latest.model.padEnd(24)} ${phaseText(role, latest.phase)}, last activity ${ago(now - latest.lastActivityAt)}`);
       if (latest.phase === "stalled" && role === "driver") {
-        problems.push(`${cwd}: the driver has been silent for ${ago(now - latest.lastActivityAt).replace(" ago", "")} in the middle of a turn. Codex was probably restarted or lost its connection. Open that chat and send a message such as "continue".`);
+        problems.push(`${cwd}: the driver has been silent for ${ago(now - latest.lastActivityAt).replace(" ago", "")} in the middle of a turn. Codex was probably restarted or lost its connection. The bridge resumes it by itself when it is sure the turn is dead (\`codex-chatgpt-web longrun resume\` does it now); otherwise open that chat and send a message such as "continue".`);
       }
       // Only a worker whose process still holds the folder can be stuck; a silent chat with no process just ended.
       // A chat older than the process belongs to an earlier worker, so it says nothing about this one.

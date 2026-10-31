@@ -191,7 +191,7 @@ bun run app:package
 
 ## 장시간 작업
 
-몇 시간씩 걸리는 작업에는 `scripts/longrun/longrun.mjs`가 Codex를 감독합니다. 진행 파일을 유지하고, 실패 후 같은 채팅을 재개하거나 브리핑과 함께 새 채팅으로 넘기며, 사용자의 검증 명령이 통과해야만 끝납니다. 코딩은 ChatGPT 웹 할당량을 사용하고, 작은 컨트롤러 모델(기본 `gpt-6-luna`, high, 변경 가능)은 조언만 합니다. [docs/long-horizon.md](docs/long-horizon.md)를 참고하세요.
+몇 시간씩 걸리는 작업에는 Codex에서 Luna 모델을 선택하세요. Luna가 전체를 진행하고, 코딩은 ChatGPT 웹 워커에게 한 조각씩 맡기며, 시도할 때마다 진행 상황을 저장합니다. PC나 서버에서는 테스트를 실행하지 않고, 변경은 커밋해 `main`에 푸시한 뒤 GitHub Actions로 한 번만 확인합니다. 코딩은 ChatGPT 웹 할당량, Luna는 Codex 할당량을 사용합니다. [docs/long-horizon.md](docs/long-horizon.md)를 참고하세요.
 
 ## Star History
 
